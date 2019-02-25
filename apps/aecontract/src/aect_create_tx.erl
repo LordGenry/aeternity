@@ -33,6 +33,8 @@
          owner_pubkey/1,
          code/1,
          contract_pubkey/1,
+         abi_version/1,
+         ct_version/1,
          vm_version/1,
          deposit/1,
          amount/1,
@@ -40,6 +42,10 @@
          gas_price/1,
          call_data/1,
          call_id/1
+        ]).
+
+%% Conversion from old db format
+-export([from_db_format/1
         ]).
 
 -define(CONTRACT_CREATE_TX_VSN, 1).
@@ -51,17 +57,18 @@
 -define(is_non_neg_integer(X), (is_integer(X) andalso (X >= 0))).
 
 -record(contract_create_tx, {
-          owner_id   :: aec_id:id(),
-          nonce      :: non_neg_integer(),
-          code       :: binary(),
-          vm_version :: aect_contracts:vm_version(),
-          fee        :: aect_contracts:amount(),
-          deposit    :: aect_contracts:amount(),
-          amount     :: aect_contracts:amount(),
-          gas        :: aect_contracts:amount(),
-          gas_price  :: aect_contracts:amount(),
-          call_data  :: binary(),
-          ttl        :: aetx:tx_ttl()
+          owner_id    :: aec_id:id(),
+          nonce       :: non_neg_integer(),
+          code        :: binary(),
+          ct_version  :: aect_contracts:version()
+                       | non_neg_integer(), %% NOTE: Only in old persisted db
+          fee         :: aect_contracts:amount(),
+          deposit     :: aect_contracts:amount(),
+          amount      :: aect_contracts:amount(),
+          gas         :: aect_contracts:amount(),
+          gas_price   :: aect_contracts:amount(),
+          call_data   :: binary(),
+          ttl         :: aetx:tx_ttl()
         }).
 
 -type amount() :: aect_contracts:amount().
@@ -69,6 +76,15 @@
 -opaque tx() :: #contract_create_tx{}.
 
 -export_type([tx/0]).
+
+%%%===================================================================
+%%% Conversion of old db format
+
+-spec from_db_format(tx()) -> tx().
+from_db_format(#contract_create_tx{ct_version = #{}} = Tx) ->
+    Tx;
+from_db_format(#contract_create_tx{ct_version = VMVersion} = Tx) ->
+    Tx#contract_create_tx{ct_version = aect_contracts:split_vm_abi(VMVersion)}.
 
 %%%===================================================================
 %%% Getters
@@ -89,8 +105,16 @@ code(#contract_create_tx{code = X}) ->
 contract_pubkey(#contract_create_tx{} = Tx) ->
     aect_contracts:compute_contract_pubkey(owner_pubkey(Tx), nonce(Tx)).
 
+-spec ct_version(tx()) -> aect_contracts:version().
+ct_version(#contract_create_tx{ct_version = X}) ->
+    X.
+
+-spec abi_version(tx()) -> aect_contracts:abi_version().
+abi_version(#contract_create_tx{ct_version = #{abi := X}}) ->
+    X.
+
 -spec vm_version(tx()) -> aect_contracts:vm_version().
-vm_version(#contract_create_tx{vm_version = X}) ->
+vm_version(#contract_create_tx{ct_version = #{vm := X}}) ->
     X.
 
 -spec deposit(tx()) -> amount().
@@ -133,28 +157,29 @@ ttl(#contract_create_tx{ttl = TTL}) ->
     TTL.
 
 -spec new(map()) -> {ok, aetx:tx()}.
-new(#{owner_id   := OwnerId,
-      nonce      := Nonce,
-      code       := Code,
-      vm_version := VmVersion,
-      deposit    := Deposit,
-      amount     := Amount,
-      gas        := Gas,
-      gas_price  := GasPrice,
-      call_data  := CallData,
-      fee        := Fee} = Args) ->
+new(#{owner_id    := OwnerId,
+      nonce       := Nonce,
+      code        := Code,
+      vm_version  := VMVersion,
+      abi_version := ABIVersion,
+      deposit     := Deposit,
+      amount      := Amount,
+      gas         := Gas,
+      gas_price   := GasPrice,
+      call_data   := CallData,
+      fee         := Fee} = Args) ->
     account = aec_id:specialize_type(OwnerId),
-    Tx = #contract_create_tx{owner_id   = OwnerId,
-                             nonce      = Nonce,
-                             code       = Code,
-                             vm_version = VmVersion,
-                             deposit    = Deposit,
-                             amount     = Amount,
-                             gas        = Gas,
-                             gas_price  = GasPrice,
-                             call_data  = CallData,
-                             fee        = Fee,
-                             ttl        = maps:get(ttl, Args, 0)},
+    Tx = #contract_create_tx{owner_id    = OwnerId,
+                             nonce       = Nonce,
+                             code        = Code,
+                             ct_version  = #{vm => VMVersion, abi => ABIVersion},
+                             deposit     = Deposit,
+                             amount      = Amount,
+                             gas         = Gas,
+                             gas_price   = GasPrice,
+                             call_data   = CallData,
+                             fee         = Fee,
+                             ttl         = maps:get(ttl, Args, 0)},
     {ok, aetx:new(?MODULE, Tx)}.
 
 -spec type() -> atom().
@@ -172,238 +197,35 @@ origin(#contract_create_tx{} = Tx) ->
 %% Owner should exist, and have enough funds for the fee, the amount
 %% the deposit and the gas
 -spec check(tx(), aec_trees:trees(), aetx_env:env()) -> {ok, aec_trees:trees()} | {error, term()}.
-check(#contract_create_tx{nonce      = Nonce,
-                          vm_version = VmVersion,
-                          amount     = Amount,
-                          gas        = Gas,
-                          gas_price  = GasPrice,
-                          deposit    = Deposit,
-                          fee = Fee} = Tx,
-      Trees, Env) when ?is_non_neg_integer(GasPrice) ->
-    OwnerPubKey = owner_pubkey(Tx),
-    RequiredAmount =
-        case aetx_env:context(Env) of
-            aetx_transaction -> Amount + Deposit + Fee + Gas * GasPrice;
-            aetx_contract    -> Amount + Deposit
-        end,
-    Checks =
-        [fun() ->
-                 aetx_utils:check_account(OwnerPubKey, Trees, Nonce, RequiredAmount)
-         end |
-         case VmVersion of
-            ?AEVM_01_Sophia_01 ->
-                 [ fun() ->
-                           case get_sophia_serialization(Tx) of
-                               {ok, #{type_info := TypeInfo}} ->
-                                   check_init_function(Tx, TypeInfo);
-                               {error, _} = Err -> Err
-                           end
-                   end
-                 ];
-            ?AEVM_01_Solidity_01 ->
-                [?AEVM_01_Solidity_01_enabled]
-         end
-        ],
-    case aeu_validation:run(Checks) of
-        ok              -> {ok, Trees};
-        {error, Reason} -> {error, Reason}
-    end.
-
-get_sophia_serialization(#contract_create_tx{code = SerializedCode}) ->
-    try aect_sophia:deserialize(SerializedCode) of
-        Map -> {ok, Map}
-    catch
-        _:_ -> {error, bad_sophia_code}
-    end.
-
-check_init_function(#contract_create_tx{call_data = CallData}, TypeInfo) ->
-    case aeso_abi:get_function_hash_from_calldata(CallData) of
-        {ok, Hash} ->
-            case aeso_abi:function_name_from_type_hash(Hash, TypeInfo) of
-                {ok, <<"init">>} -> ok;
-                _ -> {error, bad_init_function}
-            end;
-        _Other -> {error, bad_init_function}
-    end.
+check(#contract_create_tx{}, Trees,_Env) ->
+    %% Checks in process/3
+    {ok, Trees}.
 
 -spec signers(tx(), aec_trees:trees()) -> {ok, [aec_keys:pubkey()]}.
 signers(#contract_create_tx{} = Tx, _) ->
     {ok, [owner_pubkey(Tx)]}.
 
 -spec process(tx(), aec_trees:trees(), aetx_env:env()) -> {ok, aec_trees:trees()}.
-process(#contract_create_tx{owner_id   = OwnerId,
-                            nonce      = Nonce,
-                            amount     = Amount,
-                            gas        = Gas,
-                            gas_price  = GasPrice,
-                            deposit    = Deposit,
-                            fee        = Fee} = CreateTx,
-        Trees0, Env) ->
-    Height = aetx_env:height(Env),
-    OwnerPubKey = owner_pubkey(CreateTx),
-
-    {Contract, Trees1} = create_contract(CreateTx, Trees0),
-    ContractId = aect_contracts:id(Contract),
-    ContractPubKey  = aect_contracts:pubkey(Contract),
-
-    %% Charge the fee, the gas (the unused portion will be refunded)
-    %% and the deposit (stored in the contract) to the contract owner (caller),
-    %% and transfer the funds (amount) to the contract account.
-    %% Also bump nonce.
-    Charges =
-        case aetx_env:context(Env) of
-            aetx_transaction -> Deposit + Fee + Gas * GasPrice;
-            aetx_contract    -> Deposit
-        end,
-    Trees2 = spend(OwnerPubKey, ContractPubKey, Amount, Charges, Nonce,
-                   Trees1, Env),
-
-    %% Create the init call.
-    Call0 = aect_call:new(OwnerId, Nonce, ContractId, Height, GasPrice),
-    %% Execute init calQl to get the contract state and return value
-    {CallRes, Trees3} =
-        run_contract(CreateTx, Call0, Env, Trees2, Contract, ContractPubKey),
-
-    Rollback =
-        fun(CallResX) ->
-            %% Don't create the contract if 'init' fails!
-            %% Go back to state trees without contract or any account changes
-            %% Spend gas + fee
-            %% (The VM will decide how much gas is used: 0, some, all.)
-            Trees4 = aect_utils:insert_call_in_trees(CallResX, Trees0),
-            UsedAmount = aect_call:gas_used(CallResX) * GasPrice,
-            Trees5 = spend(OwnerPubKey, ContractPubKey, 0, Fee + UsedAmount, Nonce,
-                           Trees4, Env),
-            {ok, Trees5}
-        end,
-
-    case aect_call:return_type(CallRes) of
-        ok ->
-            case initialize_contract(CreateTx, ContractPubKey, Contract,
-                                     CallRes, Trees3, Env) of
-                Ok = {ok, _} ->
-                    Ok;
-                {error, _}   ->
-                    CallRes1 =
-                        aect_call:set_return_value(<<"out_of_gas">>,
-                            aect_call:set_return_type(error, CallRes)),
-                    Rollback(CallRes1)
-            end;
-        E ->
-            lager:debug("Init call error ~w ~w~n",[E, CallRes]),
-            Rollback(CallRes)
-    end.
-
-
-create_contract(CreateTx, Trees0) ->
-    %% Create the contract and insert it into the contract state tree
-    %%   The public key for the contract is generated from the owners pubkey
-    %%   and the nonce, so that no one has the private key.
-    Contract        = aect_contracts:new(CreateTx),
-    ContractsTree0  = aec_trees:contracts(Trees0),
-    ContractsTree1  = aect_state_tree:insert_contract(Contract, ContractsTree0),
-    Trees1          = aec_trees:set_contracts(Trees0, ContractsTree1),
-    {Contract, Trees1}.
-
-
-spend(SenderPubKey, ReceiverPubKey, Value, Fee, Nonce,
-      Trees, Env) ->
-    Height = aetx_env:height(Env),
-    {ok, SpendTx} = aec_spend_tx:new(
-                      #{ sender_id    => aec_id:create(account, SenderPubKey)
-                       , recipient_id => aec_id:create(account, ReceiverPubKey)
-                       , amount       => Value
-                       , fee          => Fee
-                       , ttl          => Height
-                       , nonce        => Nonce
-                       , payload      => <<>>}),
-    Trees1 = aec_trees:ensure_account(ReceiverPubKey, Trees),
-    {ok, Trees2} = aetx:process(SpendTx, Trees1, Env),
-    Trees2.
-
-run_contract(#contract_create_tx{ nonce      =_Nonce
-                                , code       = Code
-                                , vm_version = VmVersion
-                                , amount     =_Amount
-                                , gas        = Gas
-                                , gas_price  = GasPrice
-                                , call_data  = CallData
-                                } = Tx,
-             Call, Env, Trees, Contract, ContractPubKey)->
-    Caller = owner_pubkey(Tx),
-    CallStack = [], %% TODO: should we have a call stack for create_tx also
-                    %% when creating a contract in a contract.
-
-    Store     = aect_contracts:state(Contract),
-    CallDef = #{ caller      => Caller
-               , contract    => ContractPubKey
-               , gas         => Gas
-               , gas_price   => GasPrice
-               , call_data   => CallData
-               , amount      => 0 %% Initial call takes no amount
-               , call_stack  => CallStack
-               , code        => Code
-               , store       => Store
-               , call        => Call
-               , trees       => Trees
-               , tx_env      => Env
-               , off_chain   => false
-               },
-    aect_dispatch:run(VmVersion, CallDef).
-
-
-initialize_contract(#contract_create_tx{vm_version = VmVersion,
-                                        amount     =_Amount,
-                                        gas        = Gas,
-                                        gas_price  = GasPrice} = Tx,
-                    _ContractPubKey, Contract,
-                    CallRes, Trees, Env) ->
-    OwnerPubKey = owner_pubkey(Tx),
-
-    %% Insert the call into the state tree for one block.
-    %% This is mainly to make the return type (ok | error | revert) accessible.
-    %% The return value is cleared (empty binary) for init calls.
-    %% Each block starts with an empty calls tree.
-    ClearedCallRes = aect_call:set_return_value(<<>>, CallRes),
-    Trees1 = aect_utils:insert_call_in_trees(ClearedCallRes, Trees),
-
-    %% Refund unused gas.
-    Trees2 =
-        case aetx_env:context(Env) of
-            aetx_transaction ->
-                aect_utils:refund_unused_gas(OwnerPubKey, GasPrice, Gas, CallRes, Trees1);
-            aetx_contract ->
-                Trees1
-        end,
-
-    %% TODO: Move ABI specific code to abi module(s).
-    case VmVersion of
-        ?AEVM_01_Sophia_01 ->
-            %% Save the initial state (returned by `init`) in the store.
-            InitState = aect_call:return_value(CallRes),
-            %% TODO: move to/from_sophia_state to make nicer dependencies?
-            case aevm_eeevm_store:from_sophia_state(InitState) of
-                {ok, Store} ->
-                    Contract1 = aect_contracts:set_state(Store, Contract),
-                    {ok, set_contract(Contract1, Trees2)};
-                Err = {error, _} ->
-                    Err
-            end;
-        ?AEVM_01_Solidity_01 ->
-            %% Solidity inital call returns the code to store in the contract.
-            NewCode = aect_call:return_value(CallRes),
-            {ok, set_contract(aect_contracts:set_code(NewCode, Contract), Trees2)}
-    end.
-
-set_contract(Contract, Trees) ->
-    ContractsTree0 = aec_trees:contracts(Trees),
-    ContractsTree1 = aect_state_tree:enter_contract(Contract, ContractsTree0),
-    aec_trees:set_contracts(Trees, ContractsTree1).
+process(#contract_create_tx{} = Tx, Trees, Env) ->
+    Instructions =
+        aec_tx_processor:contract_create_tx_instructions(
+          owner_pubkey(Tx),
+          amount(Tx),
+          deposit(Tx),
+          gas(Tx),
+          gas_price(Tx),
+          abi_version(Tx),
+          vm_version(Tx),
+          code(Tx),
+          call_data(Tx),
+          fee(Tx),
+          nonce(Tx)),
+    aec_tx_processor:eval(Instructions, Trees, Env).
 
 serialize(#contract_create_tx{owner_id   = OwnerId,
                               nonce      = Nonce,
                               code       = Code,
-                              vm_version = VmVersion,
+                              ct_version = CTVersion,
                               fee        = Fee,
                               ttl        = TTL,
                               deposit    = Deposit,
@@ -415,7 +237,7 @@ serialize(#contract_create_tx{owner_id   = OwnerId,
      [ {owner_id, OwnerId}
      , {nonce, Nonce}
      , {code, Code}
-     , {vm_version, VmVersion}
+     , {ct_version, aect_contracts:pack_vm_abi(CTVersion)}
      , {fee, Fee}
      , {ttl, TTL}
      , {deposit, Deposit}
@@ -429,7 +251,7 @@ deserialize(?CONTRACT_CREATE_TX_VSN,
             [ {owner_id, OwnerId}
             , {nonce, Nonce}
             , {code, Code}
-            , {vm_version, VmVersion}
+            , {ct_version, CTVersion}
             , {fee, Fee}
             , {ttl, TTL}
             , {deposit, Deposit}
@@ -441,7 +263,7 @@ deserialize(?CONTRACT_CREATE_TX_VSN,
     #contract_create_tx{owner_id   = OwnerId,
                         nonce      = Nonce,
                         code       = Code,
-                        vm_version = VmVersion,
+                        ct_version = aect_contracts:split_vm_abi(CTVersion),
                         fee        = Fee,
                         ttl        = TTL,
                         deposit    = Deposit,
@@ -454,7 +276,7 @@ serialization_template(?CONTRACT_CREATE_TX_VSN) ->
     [ {owner_id, id}
     , {nonce, int}
     , {code, binary}
-    , {vm_version, int}
+    , {ct_version, int}
     , {fee, int}
     , {ttl, int}
     , {deposit, int}
@@ -464,21 +286,22 @@ serialization_template(?CONTRACT_CREATE_TX_VSN) ->
     , {call_data, binary}
     ].
 
-for_client(#contract_create_tx{ owner_id   = OwnerId,
-                                nonce      = Nonce,
-                                code       = Code,
-                                vm_version = VmVersion,
-                                fee        = Fee,
-                                ttl        = TTL,
-                                deposit    = Deposit,
-                                amount     = Amount,
-                                gas        = Gas,
-                                gas_price  = GasPrice,
-                                call_data  = CallData}) ->
+for_client(#contract_create_tx{ owner_id    = OwnerId,
+                                nonce       = Nonce,
+                                code        = Code,
+                                ct_version  = CTVersion,
+                                fee         = Fee,
+                                ttl         = TTL,
+                                deposit     = Deposit,
+                                amount      = Amount,
+                                gas         = Gas,
+                                gas_price   = GasPrice,
+                                call_data   = CallData}) ->
     #{<<"owner_id">>    => aehttp_api_encoder:encode(id_hash, OwnerId),
       <<"nonce">>       => Nonce,
       <<"code">>        => aehttp_api_encoder:encode(contract_bytearray, Code),
-      <<"vm_version">>  => aeu_hex:hexstring_encode(<<VmVersion:8>>),
+      <<"vm_version">>  => aeu_hex:hexstring_encode(<<(maps:get(vm, CTVersion)):16>>),
+      <<"abi_version">> => aeu_hex:hexstring_encode(<<(maps:get(abi, CTVersion)):16>>),
       <<"fee">>         => Fee,
       <<"ttl">>         => TTL,
       <<"deposit">>     => Deposit,

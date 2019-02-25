@@ -9,12 +9,13 @@
 -module(aetx).
 
 -export([ accounts/1
-        , check/3
         , deserialize_from_binary/1
         , fee/1
+        , from_db_format/1
         , gas_limit/2
         , min_gas/2
         , gas_price/1
+        , min_gas_price/2
         , ttl/1
         , size/1
         , min_fee/2
@@ -139,7 +140,7 @@
     {ok, NewTrees :: aec_trees:trees()} | {error, Reason :: term()}.
 
 -callback process(Tx :: tx_instance(), aec_trees:trees(), aetx_env:env()) ->
-    {ok, NewTrees :: aec_trees:trees()}.
+    {ok, NewTrees :: aec_trees:trees()} | {error, Reason :: term()}.
 
 -callback serialize(Tx :: tx_instance()) ->
     term().
@@ -209,9 +210,17 @@ gas_price(#aetx{ type = Type, cb = CB, tx = Tx }) when ?IS_CONTRACT_TX(Type) ->
 gas_price(#aetx{}) ->
     undefined.
 
+-spec min_gas_price(Tx :: tx(), Height :: aec_blocks:height()) -> MinGasPrice :: non_neg_integer().
+min_gas_price(AETx = #aetx{ type = Type, cb = CB, tx = Tx }, Height) when ?IS_CONTRACT_TX(Type) ->
+    GasLimit = gas_limit(AETx, Height),
+    min(CB:gas_price(Tx), (CB:fee(Tx) + GasLimit - 1) div GasLimit);
+min_gas_price(AETx = #aetx{ cb = CB, tx = Tx }, Height) ->
+    GasLimit = gas_limit(AETx, Height),
+    (CB:fee(Tx) + GasLimit - 1) div GasLimit.
+
 -spec min_fee(Tx :: tx(), Height :: aec_blocks:height()) -> Fee :: non_neg_integer().
 min_fee(#aetx{} = AeTx, Height) ->
-    min_gas(AeTx, Height) * aec_governance:minimum_gas_price().
+    min_gas(AeTx, Height) * aec_governance:minimum_gas_price(Height).
 
 min_gas(#aetx{ type = Type, size = Size }, _Height) when ?IS_CONTRACT_TX(Type) ->
     base_gas(Type) + size_gas(Size);
@@ -249,12 +258,23 @@ ttl(#aetx{ cb = CB, tx = Tx }) ->
 size(#aetx{ size = Size }) ->
     Size.
 
+-spec from_db_format(tx()) -> tx().
+from_db_format(#aetx{ cb = aect_call_tx, tx = Tx } = AETx) ->
+    case aect_call_tx:from_db_format(Tx) of
+        Tx  -> AETx;
+        Tx1 -> AETx#aetx{ tx = Tx1 }
+    end;
+from_db_format(#aetx{ cb = aect_create_tx, tx = Tx } = AETx) ->
+    case aect_create_tx:from_db_format(Tx) of
+        Tx  -> AETx;
+        Tx1 -> AETx#aetx{ tx = Tx1 }
+    end;
+from_db_format(#aetx{} = Tx) ->
+    Tx.
+
 %%%===================================================================
 %%% Checking transactions
 %%%===================================================================
-
--spec check(tx(), aec_trees:trees(), aetx_env:env()) ->
-               {ok, aec_trees:trees()} | {error, term()}.
 
 check(Tx, Trees, Env) ->
     case aetx_env:context(Env) of
@@ -268,7 +288,7 @@ check_contract(#aetx{ cb = CB, tx = Tx }, Trees, Env) ->
 check_tx(#aetx{ cb = CB, tx = Tx } = AeTx, Trees, Env) ->
     Checks =
         [fun() -> check_minimum_fee(AeTx, Env) end,
-         fun() -> check_minimum_gas_price(AeTx) end,
+         fun() -> check_minimum_gas_price(AeTx, aetx_env:height(Env)) end,
          fun() -> check_ttl(AeTx, Env) end],
     case aeu_validation:run(Checks) of
         ok             -> CB:check(Tx, Trees, Env);
@@ -290,12 +310,12 @@ check_minimum_fee(AeTx, Env) ->
             {error, too_low_abs_ttl}
     end.
 
-check_minimum_gas_price(AeTx) ->
+check_minimum_gas_price(AeTx, Height) ->
     case gas_price(AeTx) of
         undefined ->
             ok;
         GasPrice when is_integer(GasPrice) ->
-            case GasPrice >= aec_governance:minimum_gas_price() of
+            case GasPrice >= aec_governance:minimum_gas_price(Height) of
                 true  -> ok;
                 false -> {error, too_low_gas_price}
             end
@@ -312,9 +332,14 @@ check_ttl(AeTx, Env) ->
 %%%===================================================================
 
 -spec process(tx(), aec_trees:trees(), aetx_env:env()) ->
-                 {ok, NewTrees :: aec_trees:trees()}.
-process(#aetx{ cb = CB, tx = Tx }, Trees, Env) ->
-    CB:process(Tx, Trees, Env).
+                 {ok, NewTrees :: aec_trees:trees()} | {error, term()}.
+process(#aetx{ cb = CB, tx = Tx } = AeTx, Trees, Env) ->
+    case check(AeTx, Trees, Env) of
+        {ok, Trees1} ->
+            CB:process(Tx, Trees1, Env);
+        {error, _} = Err ->
+            Err
+    end.
 
 %% Call a custom callback function in the transaction module.
 -spec custom_apply(atom(), tx(), aec_trees:trees(), aetx_env:env()) -> any().

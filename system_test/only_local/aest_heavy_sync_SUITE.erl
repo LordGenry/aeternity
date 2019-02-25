@@ -33,7 +33,7 @@
 
 %=== INCLUDES ==================================================================
 
--include_lib("eunit/include/eunit.hrl").
+-include_lib("stdlib/include/assert.hrl").
 
 %=== MACROS ====================================================================
 
@@ -72,7 +72,7 @@ end_per_suite(_Config) -> ok.
 
 %% This is keypair of an account set in genesis config file
 %% (see https://github.com/aeternity/epoch/blob/master/data/aecore/.genesis/accounts_test.json),
-%% so beneficiary configuration in epoch.yaml (mining > beneficiary param) does not matter.
+%% so beneficiary configuration in aeternity.yaml (mining > beneficiary param) does not matter.
 patron() ->
     #{ pubkey => <<206,167,173,228,112,201,249,157,157,78,64,8,128,168,111,29,73,187,68,75,98,241,26,158,187,100,187,207,235,115,254,243>>,
        privkey => <<230,169,29,99,60,119,207,87,113,50,157,51,84,179,188,239,27,197,224,50,196,61,112,182,211,90,249,35,206,30,183,77,206,167,173,228,112,201,249,157,157,78,64,8,128,168,111,29,73,187,68,75,98,241,26,158,187,100,187,207,235,115,254,243>>
@@ -109,8 +109,8 @@ many_spend_txs(Cfg) ->
     %% Compute gas for a simple spend
     {ok, FakeTx} = aec_spend_tx:new(#{ sender_id => aec_id:create(account, maps:get(pubkey, patron()))
                                      , recipient_id => aec_id:create(account, maps:get(pubkey, patron()))
-                                     , amount => 1
-                                     , fee => 1
+                                     , amount => 1 * aest_nodes:gas_price()
+                                     , fee => 1 * aest_nodes:gas_price()
                                      , ttl => 10000000
                                      , nonce => 1000
                                      , payload => <<"node3">>}),
@@ -200,7 +200,9 @@ add_many_spend_tx(Node, SenderAcct, [Nonce|Nonces], Acc) ->
 
 add_spend_tx(Node, Sender, Nonce) ->
     %% create new receiver
+    GasPrice = aest_nodes:gas_price(),
     #{ public := RecvPubKey, secret := _RecvSecKey } =  enacl:sign_keypair(),
-    #{ tx_hash := TxHash} = post_spend_tx(Node, Sender, #{pubkey => RecvPubKey}, Nonce, #{amount => 1, fee => 20000}),
+    #{ tx_hash := TxHash} = post_spend_tx(Node, Sender, #{pubkey => RecvPubKey}, Nonce, 
+                                          #{amount => 1, fee => 20000 * GasPrice}),
     {Nonce, TxHash}.
 

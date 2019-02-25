@@ -2,7 +2,7 @@
 %%%-------------------------------------------------------------------
 %%% @copyright (C) 2017, Aeternity Anstalt
 %%% @doc
-%%% API to the epoch db
+%%% API to the Aeternity node db
 %%% @end
 %%%-------------------------------------------------------------------
 -module(aec_db).
@@ -294,8 +294,9 @@ write_block(Block, Hash) ->
 -spec get_block(binary()) -> aec_blocks:block().
 get_block(Hash) ->
     ?t(begin
-           [#aec_headers{value = Header}] =
+           [#aec_headers{value = DBHeader}] =
                mnesia:read(aec_headers, Hash),
+           Header = aec_headers:from_db_header(DBHeader),
            case aec_headers:type(Header) of
                key ->
                    aec_blocks:new_key_from_header(Header);
@@ -303,9 +304,9 @@ get_block(Hash) ->
                    [#aec_blocks{txs = TxHashes, pof = PoF}] =
                        mnesia:read(aec_blocks, Hash),
                    Txs = [begin
-                              [#aec_signed_tx{value = STx}] =
+                              [#aec_signed_tx{value = DBSTx}] =
                                   mnesia:read(aec_signed_tx, TxHash),
-                              STx
+                              aetx_sign:from_db_format(DBSTx)
                           end || TxHash <- TxHashes],
                    aec_blocks:new_micro_from_header(Header, Txs, PoF)
            end
@@ -319,9 +320,9 @@ find_block_tx_hashes(Hash) ->
 
 get_header(Hash) ->
     ?t(begin
-           [#aec_headers{value = Header}] =
+           [#aec_headers{value = DBHeader}] =
                mnesia:read(aec_headers, Hash),
-           Header
+           aec_headers:from_db_header(DBHeader)
        end).
 
 has_block(Hash) ->
@@ -333,16 +334,17 @@ has_block(Hash) ->
 -spec find_block(binary()) -> 'none' | {'value', aec_blocks:block()}.
 find_block(Hash) ->
     ?t(case mnesia:read(aec_headers, Hash) of
-           [#aec_headers{value = Header}] ->
+           [#aec_headers{value = DBHeader}] ->
+               Header = aec_headers:from_db_header(DBHeader),
                case aec_headers:type(Header) of
                    key   -> {value, aec_blocks:new_key_from_header(Header)};
                    micro ->
                        [#aec_blocks{txs = TxHashes, pof = PoF}]
                            = mnesia:read(aec_blocks, Hash),
                        Txs = [begin
-                                  [#aec_signed_tx{value = STx}] =
+                                  [#aec_signed_tx{value = DBSTx}] =
                                       mnesia:read(aec_signed_tx, TxHash),
-                                  STx
+                                  aetx_sign:from_db_format(DBSTx)
                               end || TxHash <- TxHashes],
                        {value, aec_blocks:new_micro_from_header(Header, Txs, PoF)}
                end;
@@ -352,7 +354,8 @@ find_block(Hash) ->
 -spec find_key_block(binary()) -> 'none' | {'value', aec_blocks:key_block()}.
 find_key_block(Hash) ->
     ?t(case mnesia:read(aec_headers, Hash) of
-           [#aec_headers{value = Header}] ->
+           [#aec_headers{value = DBHeader}] ->
+               Header = aec_headers:from_db_header(DBHeader),
                case aec_headers:type(Header) of
                    key   -> {value, aec_blocks:new_key_from_header(Header)};
                    micro -> none
@@ -363,19 +366,19 @@ find_key_block(Hash) ->
 -spec find_header(binary()) -> 'none' | {'value', aec_headers:header()}.
 find_header(Hash) ->
     case ?t(mnesia:read(aec_headers, Hash)) of
-        [#aec_headers{value = Header}] -> {value, Header};
+        [#aec_headers{value = DBHeader}] -> {value, aec_headers:from_db_header(DBHeader)};
         [] -> none
     end.
 
 -spec find_headers_at_height(pos_integer()) -> [aec_headers:header()].
 find_headers_at_height(Height) when is_integer(Height), Height >= 0 ->
-    ?t([H || #aec_headers{value = H}
+    ?t([aec_headers:from_db_header(H) || #aec_headers{value = H}
                  <- mnesia:index_read(aec_headers, Height, height)]).
 
 -spec find_headers_and_hash_at_height(pos_integer()) ->
                                              [{aec_headers:header(), binary()}].
 find_headers_and_hash_at_height(Height) when is_integer(Height), Height >= 0 ->
-    ?t([{H, K} || #aec_headers{key = K, value = H}
+    ?t([{aec_headers:from_db_header(H), K} || #aec_headers{key = K, value = H}
                  <- mnesia:index_read(aec_headers, Height, height)]).
 
 find_discovered_pof(Hash) ->
@@ -561,13 +564,13 @@ gc_tx(TxHash) ->
        end).
 
 get_signed_tx(Hash) ->
-    [#aec_signed_tx{value = STx}] = ?t(read(aec_signed_tx, Hash)),
-    STx.
+    [#aec_signed_tx{value = DBSTx}] = ?t(read(aec_signed_tx, Hash)),
+    aetx_sign:from_db_format(DBSTx).
 
 find_signed_tx(Hash) ->
     case ?t(read(aec_signed_tx, Hash)) of
         []                            -> none;
-        [#aec_signed_tx{value = STx}] -> {value, STx}
+        [#aec_signed_tx{value = DBSTx}] -> {value, aetx_sign:from_db_format(DBSTx)}
     end.
 
 add_tx_location(STxHash, BlockHash) when is_binary(STxHash),
@@ -597,14 +600,15 @@ find_tx_location(STxHash) ->
                                  | {binary(), aetx_sign:signed_tx()}.
 find_tx_with_location(STxHash) ->
     ?t(case mnesia:read(aec_signed_tx, STxHash) of
-           [#aec_signed_tx{value = STx}] ->
+           [#aec_signed_tx{value = DBSTx}] ->
                case mnesia:read(aec_tx_location, STxHash) of
                    [] ->
                        case mnesia:read(aec_tx_pool, STxHash) of
                            [] -> none;
-                           [_] -> {mempool, STx}
+                           [_] -> {mempool, aetx_sign:from_db_format(DBSTx)}
                        end;
-                   [#aec_tx_location{value = BlockHash}] -> {BlockHash, STx}
+                   [#aec_tx_location{value = BlockHash}] ->
+                       {BlockHash, aetx_sign:from_db_format(DBSTx)}
                end;
            [] -> none
        end).

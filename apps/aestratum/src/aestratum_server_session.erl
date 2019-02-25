@@ -108,22 +108,22 @@ recv_msg_error(parse_error, State) ->
     {send, encode(RspMap), State};
 recv_msg_error({invalid_msg, MaybeId}, State) ->
     RspMap = #{type => rsp, method => undefined,
-               id => aestratum_jsonrpc_utils:to_id(MaybeId),
+               id => aestratum_jsonrpc:to_id(MaybeId),
                reason => invalid_msg, data => null},
     {send, encode(RspMap), State};
 recv_msg_error({invalid_method, MaybeId}, State) ->
     RspMap = #{type => rsp, method => undefined,
-               id => aestratum_jsonrpc_utils:to_id(MaybeId),
+               id => aestratum_jsonrpc:to_id(MaybeId),
                reason => invalid_method, data => null},
     {send, encode(RspMap), State};
 recv_msg_error({invalid_param, Param, MaybeId}, State) ->
     RspMap = #{type => rsp, method => undefined,
-               id => aestratum_jsonrpc_utils:to_id(MaybeId),
+               id => aestratum_jsonrpc:to_id(MaybeId),
                reason => invalid_param, data => atom_to_binary(Param, utf8)},
     {send, encode(RspMap), State};
 recv_msg_error({internal_error, MaybeId}, State) ->
     RspMap = #{type => rsp, method => undefined,
-               id => aestratum_jsonrpc_utils:to_id(MaybeId),
+               id => aestratum_jsonrpc:to_id(MaybeId),
                reason => internal_error, data => null},
     {send, encode(RspMap), State}.
 
@@ -147,7 +147,7 @@ send_subscribe_rsp(Req, State) ->
     send_subscribe_rsp1(validate_subscribe_req(Req), Req, State).
 
 send_authorize_rsp(Req, State) ->
-    send_authorize_rsp1(?MODULE:validate_authorize_req(Req), Req, State).
+    send_authorize_rsp1(validate_authorize_req(Req), Req, State).
 
 send_submit_rsp(Req, State) ->
     send_submit_rsp1(validate_submit_req(Req), Req, State).
@@ -180,10 +180,11 @@ send_subscribe_rsp1(ok, #{id := Id} = Req, #state{timer = Timer} = State) ->
 send_subscribe_rsp1({error, Rsn}, Req, State) ->
     send_unknown_error_rsp(Req, Rsn, State).
 
-send_authorize_rsp1(ok, #{id := Id}, #state{timer = Timer} = State) ->
+send_authorize_rsp1(ok, #{id := Id, user := User},
+                    #state{timer = Timer} = State) ->
     cancel_timer(Timer),
-    RspMap = #{type => rsp, method => authorize, id => Id,
-               result => true},
+    aestratum_user_register:add(User, self()),
+    RspMap = #{type => rsp, method => authorize, id => Id, result => true},
     %% After the authorization, the server is supposed to send an initial
     %% target.
     self() ! {chain, set_initial_share_target},
@@ -346,9 +347,14 @@ send_notify_ntf(JobId, BlockHash, BlockVersion, EmptyQueue, #state{} = State) ->
 
 %% Helper functions.
 
-close_session(#state{extra_nonce = ExtraNonce, timer = Timer} = State) ->
+close_session(#state{phase = Phase, extra_nonce = ExtraNonce,
+                     timer = Timer} = State) ->
     maybe_free_extra_nonce(ExtraNonce),
     maybe_cancel_timer(Timer),
+    case Phase of
+        authorized -> aestratum_user_register:del(self());
+        _Other     -> ok
+    end,
     State#state{phase = disconnected, extra_nonce = undefined,
                 timer = undefined}.
 
@@ -408,10 +414,13 @@ check_port1(Port, Port) ->
 check_port1(Port, Port1) ->
     validation_exception({port, Port, Port1}).
 
-check_user_and_password(#{user := User, password := Password}) ->
-    %% TODO: allow null password?
+check_user_and_password(#{user := User, password := null}) ->
     %% TODO: user as "public_key.worker"?
-    ok. % | {error, user_and_password}
+    case aestratum_user_register:find(User) of
+        %% Return error when the user is already present, ok otherwise.
+        {error, not_found} -> ok;
+        {ok, _Value}       -> validation_exception(user_and_password)
+    end.
 
 check_job(#{user := User, job_id := JobId, miner_nonce := MinerNonce,
             pow := Pow}) ->
@@ -462,4 +471,3 @@ state(#state{phase = Phase, timer = Timer, extra_nonce = ExtraNonce,
       accept_blocks => AcceptBlocks
      }.
 -endif.
-

@@ -23,6 +23,8 @@
          add_signatures/2,
          tx/1,
          verify/2,
+         verify_half_signed/2,
+         from_db_format/1,
          signatures/1]).
 
 %% API that should be avoided to be used
@@ -74,6 +76,13 @@ add_signatures(#signed_tx{signatures = OldSigs} = Tx, NewSigs)
 tx(#signed_tx{tx = Tx}) ->
     Tx.
 
+-spec from_db_format(tuple()) -> signed_tx().
+from_db_format(#signed_tx{tx = Tx} = STx) ->
+    case aetx:from_db_format(Tx) of
+        Tx  -> STx;
+        Tx1 -> STx#signed_tx{tx = Tx1}
+    end.
+
 %% @doc Get the signatures of a signed transaction.
 -spec signatures(signed_tx()) -> list(binary()).
 signatures(#signed_tx{signatures = Sigs}) ->
@@ -88,6 +97,14 @@ verify(#signed_tx{tx = Tx, signatures = Sigs}, Trees) ->
         {error, _Reason} ->
             {error, signature_check_failed}
     end.
+
+-spec verify_half_signed(aec_keys:pubkey() | [aec_keys:pubkey()],
+                         signed_tx()) -> ok | {error, signature_check_failed}.
+verify_half_signed(Signer, SignedTx) when is_binary(Signer) ->
+    verify_half_signed([Signer], SignedTx);
+verify_half_signed(Signers, #signed_tx{tx = Tx, signatures = Sigs}) ->
+    Bin     = aetx:serialize_to_binary(Tx),
+    verify_signatures(Signers, Bin, Sigs).
 
 verify_signatures([PubKey|Left], Bin, Sigs) ->
     case verify_one_pubkey(Sigs, PubKey, Bin) of

@@ -7,7 +7,8 @@
     stdlib,
     crypto,
     lager,
-    ranch
+    ranch,
+    aestratum_lib
    ]},
   {mod,{aestratum_app,[]}},
   {env,[]},

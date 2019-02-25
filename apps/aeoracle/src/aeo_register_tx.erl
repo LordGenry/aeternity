@@ -7,6 +7,7 @@
 -module(aeo_register_tx).
 
 -include("oracle_txs.hrl").
+-include_lib("apps/aecontract/src/aecontract.hrl").
 
 -behavior(aetx).
 
@@ -16,7 +17,7 @@
          fee/1,
          gas/1,
          ttl/1,
-         vm_version/1,
+         abi_version/1,
          nonce/1,
          origin/1,
          check/3,
@@ -49,7 +50,7 @@
           oracle_ttl                                    :: aeo_oracles:ttl(),
           fee                                           :: integer(),
           ttl                                           :: aetx:tx_ttl(),
-          vm_version = 0                                :: non_neg_integer()
+          abi_version = ?ABI_NO_VM                      :: aect_contracts:abi_version()
           }).
 
 -opaque tx() :: #oracle_register_tx{}.
@@ -92,14 +93,15 @@ gas(#oracle_register_tx{}) ->
 ttl(#oracle_register_tx{ttl = TTL}) ->
     TTL.
 
--spec vm_version(tx()) -> non_neg_integer().
-vm_version(#oracle_register_tx{vm_version = VMVersion}) ->
-    VMVersion.
+-spec abi_version(tx()) -> aect_contracts:abi_version().
+abi_version(#oracle_register_tx{abi_version = ABIVersion}) ->
+    ABIVersion.
 
 -spec new(map()) -> {ok, aetx:tx()}.
 new(#{account_id      := AccountId,
       nonce           := Nonce,
       query_format    := QueryFormat,
+      abi_version     := ABIVersion,
       response_format := ResponseFormat,
       query_fee       := QueryFee,
       oracle_ttl      := OracleTTL,
@@ -113,7 +115,7 @@ new(#{account_id      := AccountId,
                              query_fee       = QueryFee,
                              oracle_ttl      = OracleTTL,
                              fee             = Fee,
-                             vm_version      = maps:get(vm_version, Args, 0),
+                             abi_version     = ABIVersion,
                              ttl             = maps:get(ttl, Args, 0)},
     {ok, aetx:new(?MODULE, Tx)}.
 
@@ -129,45 +131,35 @@ nonce(#oracle_register_tx{nonce = Nonce}) ->
 origin(#oracle_register_tx{} = Tx) ->
     account_pubkey(Tx).
 
-%% Account should exist, and have enough funds for the fee.
 -spec check(tx(), aec_trees:trees(), aetx_env:env()) ->
         {ok, aec_trees:trees()} | {error, term()}.
-check(#oracle_register_tx{nonce = Nonce, fee = Fee, vm_version = VMVersion} = Tx,
-      Trees, _Env) ->
-    AccountPubKey = account_pubkey(Tx),
-    Checks =
-        [fun() -> aetx_utils:check_account(AccountPubKey, Trees, Nonce, Fee) end,
-         fun() -> ensure_not_oracle(AccountPubKey, Trees) end,
-         fun() -> aeo_utils:check_vm_version(VMVersion) end],
-
-    case aeu_validation:run(Checks) of
-        ok              -> {ok, Trees};
-        {error, Reason} -> {error, Reason}
-    end.
+check(#oracle_register_tx{}, Trees, _Env) ->
+    %% Checks are in process/3.
+    {ok, Trees}.
 
 -spec signers(tx(), aec_trees:trees()) -> {ok, [aec_keys:pubkey()]}.
 signers(#oracle_register_tx{} = Tx, _) ->
     {ok, [account_pubkey(Tx)]}.
 
--spec process(tx(), aec_trees:trees(), aetx_env:env()) -> {ok, aec_trees:trees()}.
-process(#oracle_register_tx{nonce = Nonce, fee = Fee} = RegisterTx,
-        Trees0, Env) ->
+-spec process(tx(), aec_trees:trees(), aetx_env:env()) -> {ok, aec_trees:trees()} | {error, term()}.
+process(#oracle_register_tx{} = RTx, Trees, Env) ->
     Height = aetx_env:height(Env),
-    AccountPubKey = account_pubkey(RegisterTx),
-    AccountsTree0 = aec_trees:accounts(Trees0),
-    OraclesTree0  = aec_trees:oracles(Trees0),
-
-    Account0 = aec_accounts_trees:get(AccountPubKey, AccountsTree0),
-    {ok, Account1} = aec_accounts:spend(Account0, Fee, Nonce),
-    AccountsTree1 = aec_accounts_trees:enter(Account1, AccountsTree0),
-
-    Oracle = aeo_oracles:new(RegisterTx, Height),
-    OraclesTree1 = aeo_state_tree:insert_oracle(Oracle, OraclesTree0),
-
-    Trees1 = aec_trees:set_accounts(Trees0, AccountsTree1),
-    Trees2 = aec_trees:set_oracles(Trees1, OraclesTree1),
-
-    {ok, Trees2}.
+    case aeo_utils:ttl_delta(Height, oracle_ttl(RTx)) of
+        {error, _} = Err -> Err;
+        DeltaTTL when is_integer(DeltaTTL) ->
+            Instructions =
+                aec_tx_processor:oracle_register_tx_instructions(
+                  account_pubkey(RTx),
+                  query_format(RTx),
+                  response_format(RTx),
+                  query_fee(RTx),
+                  DeltaTTL,
+                  abi_version(RTx),
+                  fee(RTx),
+                  nonce(RTx)
+                 ),
+            aec_tx_processor:eval(Instructions, Trees, Env)
+    end.
 
 serialize(#oracle_register_tx{account_id      = AccountId,
                               nonce           = Nonce,
@@ -177,7 +169,7 @@ serialize(#oracle_register_tx{account_id      = AccountId,
                               oracle_ttl      = {TTLType0, TTLValue},
                               fee             = Fee,
                               ttl             = TTL,
-                              vm_version      = VMVersion}) ->
+                              abi_version     = ABIVersion}) ->
     TTLType = case TTLType0 of
                   ?ttl_delta_atom -> ?ttl_delta_int;
                   ?ttl_block_atom -> ?ttl_block_int
@@ -193,7 +185,7 @@ serialize(#oracle_register_tx{account_id      = AccountId,
     , {ttl_value, TTLValue}
     , {fee, Fee}
     , {ttl, TTL}
-    , {vm_version, VMVersion}
+    , {abi_version, ABIVersion}
     ]}.
 
 deserialize(?ORACLE_REGISTER_TX_VSN,
@@ -206,7 +198,7 @@ deserialize(?ORACLE_REGISTER_TX_VSN,
            , {ttl_value, TTLValue}
            , {fee, Fee}
            , {ttl, TTL}
-           , {vm_version, VMVersion}
+           , {abi_version, ABIVersion}
            ]) ->
     TTLType = case TTLType0 of
                   ?ttl_delta_int -> ?ttl_delta_atom;
@@ -221,7 +213,7 @@ deserialize(?ORACLE_REGISTER_TX_VSN,
                         oracle_ttl      = {TTLType, TTLValue},
                         fee             = Fee,
                         ttl             = TTL,
-                        vm_version      = VMVersion
+                        abi_version     = ABIVersion
                        }.
 
 serialization_template(?ORACLE_REGISTER_TX_VSN) ->
@@ -234,7 +226,7 @@ serialization_template(?ORACLE_REGISTER_TX_VSN) ->
     , {ttl_value, int}
     , {fee, int}
     , {ttl, int}
-    , {vm_version, int}
+    , {abi_version, int}
     ].
 
 -spec version() -> non_neg_integer().
@@ -248,7 +240,7 @@ for_client(#oracle_register_tx{account_id      = AccountId,
                                query_fee       = QueryFee,
                                fee             = Fee,
                                ttl             = TTL,
-                               vm_version      = VMVersion
+                               abi_version     = ABIVersion
                               } = Tx) ->
     {TTLType, TTLValue} = oracle_ttl(Tx),
     #{<<"account_id">>      => aehttp_api_encoder:encode(id_hash, AccountId),
@@ -260,14 +252,5 @@ for_client(#oracle_register_tx{account_id      = AccountId,
                                  <<"value">> => TTLValue},
       <<"fee">>             => Fee,
       <<"ttl">>             => TTL,
-      <<"vm_version">>      => VMVersion
+      <<"abi_version">>     => ABIVersion
      }.
-
-%% -- Local functions  -------------------------------------------------------
-
-ensure_not_oracle(PubKey, Trees) ->
-    OraclesTree  = aec_trees:oracles(Trees),
-    case aeo_state_tree:lookup_oracle(PubKey, OraclesTree) of
-        {value, _Oracle} -> {error, account_is_already_an_oracle};
-        none             -> ok
-    end.

@@ -7,7 +7,10 @@
 -define(NONCE_MODULE, aestratum_nonce).
 -define(TARGET_MODULE, aestratum_target).
 -define(EXTRA_NONCE_CACHE_MODULE, aestratum_extra_nonce_cache).
+-define(USER_REGISTER_MODULE, aestratum_user_register).
 -define(JOB_MODULE, aestratum_job).
+
+-define(TEST_USER, <<"ak_123o45ABCiANzqxxxxUUrrrJuDuxU61zCGr9LJCwtTUg34567">>).
 
 session_test_() ->
     {setup,
@@ -23,6 +26,7 @@ server_session() ->
     {foreach,
      fun() ->
              meck:new(?EXTRA_NONCE_CACHE_MODULE, [passthrough]),
+             meck:new(?USER_REGISTER_MODULE, [passthrough]),
              meck:new(?TARGET_MODULE, [passthrough]),
              meck:new(?TEST_MODULE, [passthrough]),
              {ok, Pid} = aestratum_dummy_handler:start_link(?TEST_MODULE),
@@ -30,6 +34,7 @@ server_session() ->
      end,
      fun(Pid) ->
              meck:unload(?EXTRA_NONCE_CACHE_MODULE),
+             meck:unload(?USER_REGISTER_MODULE),
              meck:unload(?TARGET_MODULE),
              meck:unload(?TEST_MODULE),
              aestratum_dummy_handler:stop(Pid)
@@ -158,7 +163,7 @@ when_connected(timeout) ->
 when_connected(authorize) ->
     T = <<"when connected - authorize">>,
     L = [{{conn, #{type => req, method => authorize, id => 0,
-                   user => <<"test_user">>, password => binary:copy(<<"0">>, 64)}},
+                   user => ?TEST_USER, password => null}},
           {send,
            #{type => rsp, method => authorize, id => 0, reason => not_subscribed},
            #{phase => connected, timer_phase => connected,
@@ -168,7 +173,7 @@ when_connected(authorize) ->
 when_connected(submit) ->
     T = <<"when connected - submit">>,
     L = [{{conn, #{type => req, method => submit, id => 0,
-                   user => <<"test_user">>, job_id => <<"0123456789abcdef">>,
+                   user => ?TEST_USER, job_id => <<"0123456789abcdef">>,
                    miner_nonce => <<"0123456789">>, pow => lists:seq(1, 42)}},
           {send,
            #{type => rsp, method => submit, id => 0, reason => not_subscribed},
@@ -237,7 +242,7 @@ when_configured(configure) ->
 when_configured(authorize) ->
     T = <<"when configured - authorize">>,
     L = [{{conn, #{type => req, method => authorize, id => 1,
-                   user => <<"test_user">>, password => binary:copy(<<"0">>, 64)}},
+                   user => ?TEST_USER, password => null}},
           {send,
            #{type => rsp, method => authorize, id => 1, reason => not_subscribed},
            #{phase => configured, timer_phase => configured,
@@ -247,7 +252,7 @@ when_configured(authorize) ->
 when_configured(submit) ->
     T = <<"when configured - submit">>,
     L = [{{conn, #{type => req, method => submit, id => 1,
-                   user => <<"test_user">>, job_id => <<"0123456789abcdef">>,
+                   user => ?TEST_USER, job_id => <<"0123456789abcdef">>,
                    miner_nonce => <<"0123456789">>, pow => lists:seq(1, 42)}},
           {send,
            #{type => rsp, method => submit, id => 1, reason => not_subscribed},
@@ -317,7 +322,7 @@ when_subscribed(submit) ->
     Opts = #{host => <<"test.aepool.com">>, port => 12345,
              extra_nonce => ExtraNonce},
     L = [{{conn, #{type => req, method => submit, id => 2,
-                   user => <<"test_user">>, job_id => <<"0123456789abcdef">>,
+                   user => ?TEST_USER, job_id => <<"0123456789abcdef">>,
                    miner_nonce => <<"0123456789">>, pow => lists:seq(1, 42)}},
           {send,
            #{type => rsp, method => submit, id => 2, reason => unauthorized_worker},
@@ -350,7 +355,7 @@ when_subscribed(authorize_failure) ->
     Opts = #{host => <<"aepool.org">>, port => 5429, extra_nonce => ExtraNonce,
              user_and_password => invalid},
     L = [{{conn, #{type => req, method => authorize, id => 2,
-                   user => <<"test_user">>, password => binary:copy(<<"0">>, 64)}},
+                   user => ?TEST_USER, password => null}},
            {send,
             #{type => rsp, method => authorize, id => 2, result => false},
             #{phase => subscribed, timer_phase => subscribed,
@@ -364,7 +369,7 @@ when_subscribed(authorize_success) ->
     Opts = #{host => <<"aepool.org">>, port => 5429, extra_nonce => ExtraNonce,
              user_and_password => valid},
     L = [{{conn, #{type => req, method => authorize, id => 2,
-                   user => <<"test_user">>, password => binary:copy(<<"0">>, 64)}},
+                   user => ?TEST_USER, password => null}},
            {send,
             #{type => rsp, method => authorize, id => 2, result => true},
             #{phase => authorized, timer_phase => undefined,
@@ -391,7 +396,7 @@ when_authorized(authorize) ->
     Opts = #{host => <<"test.aepool.com">>, port => 12345,
              extra_nonce => ExtraNonce, user_and_password => valid},
     L = [{{conn, #{type => req, method => authorize, id => 3,
-                   user => <<"test_user">>, password => binary:copy(<<"0">>, 64)}},
+                   user => ?TEST_USER, password => null}},
           {send,
            #{type => rsp, method => authorize, id => 3, reason => unknown_error},
            #{phase => authorized, timer_phase => undefined}}
@@ -528,11 +533,15 @@ mock(subscribe, #{host := Host, port := Port, extra_nonce := ExtraNonce}) ->
     ok;
 mock(authorize, #{user_and_password := valid} = Opts) ->
     mock(subscribe, Opts),
-    meck:expect(?TEST_MODULE, validate_authorize_req, fun(_) -> ok end),
+    meck:expect(?USER_REGISTER_MODULE, add, fun(_, _) -> ok end),
+    meck:expect(?USER_REGISTER_MODULE, del, fun(_) -> ok end),
+    meck:expect(?USER_REGISTER_MODULE, find, fun(_) -> {error, not_found} end),
     ok;
 mock(authorize, #{user_and_password := invalid} = Opts) ->
     mock(subscribe, Opts),
-    meck:expect(?TEST_MODULE, validate_authorize_req, fun(_) -> {error, user_and_password} end),
+    meck:expect(?USER_REGISTER_MODULE, add, fun(_, _) -> ok end),
+    meck:expect(?USER_REGISTER_MODULE, del, fun(_) -> ok end),
+    meck:expect(?USER_REGISTER_MODULE, find, fun(_) -> {ok, #{}} end),
     ok;
 mock(set_initial_share_target, #{initial_share_target := InitialShareTarget} = Opts) ->
     mock(authorize, Opts),
@@ -617,7 +626,7 @@ conn_subscribe(Id, #{host := Host, port := Port, extra_nonce := ExtraNonce}) ->
 
 conn_authorize(Id, _Opts) ->
     {{conn, #{type => req, method => authorize, id => Id,
-              user => <<"test_user">>, password => binary:copy(<<"0">>, 64)}},
+              user => ?TEST_USER, password => null}},
      {send,
       #{type => rsp, method => authorize, id => Id, result => true},
       #{phase => authorized, timer_phase => undefined}}
@@ -674,4 +683,3 @@ conn_make_invalid_param(Phase, TimerPhase) ->
 
 %% TODO: howto create internal error?
 %%conn_make_internal_error()
-

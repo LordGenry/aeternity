@@ -17,13 +17,32 @@
 
 
 check_test_() ->
+    {setup,
+     fun() ->
+              ok = meck:new(aec_governance, [passthrough]),
+              meck:expect(aec_governance, minimum_gas_price, 1, 1)
+     end,
+     fun(_) ->
+              meck:unload(aec_governance)
+     end,
     [{"Tx fee lower than minimum fee defined in governance",
       fun() ->
               {ok, SpendTx} = spend_tx(#{fee => 0, %% minimum governance fee = 1
                                          payload => <<"">>}),
               StateTree = aec_test_utils:create_state_tree(),
               Env = aetx_env:tx_env(10),
-              ?assertEqual({error, too_low_fee}, aetx:check(SpendTx, StateTree, Env))
+              ?assertEqual({error, too_low_fee}, aetx:process(SpendTx, StateTree, Env))
+      end},
+     {"Tx fee lower than minimum gas price",
+      fun() ->
+              %% minimum gas price = 200 => Fee should be larger than ~ 200 * 16200
+              meck:expect(aec_governance, minimum_gas_price, 1, 200),
+              {ok, SpendTx} = spend_tx(#{fee => 200 * 15000,
+                                         payload => <<"">>}),
+              StateTree = aec_test_utils:create_state_tree(),
+              Env = aetx_env:tx_env(10),
+              ?assertEqual({error, too_low_fee}, aetx:process(SpendTx, StateTree, Env)),
+              meck:expect(aec_governance, minimum_gas_price, 1, 1)
       end},
      {"Sender account does not exist in state trees",
       fun() ->
@@ -32,7 +51,7 @@ check_test_() ->
                                          payload => <<"">>}),
               StateTree = aec_test_utils:create_state_tree(),
               Env = aetx_env:tx_env(10),
-              ?assertEqual({error, account_not_found}, aetx:check(SpendTx, StateTree, Env))
+              ?assertEqual({error, account_not_found}, aetx:process(SpendTx, StateTree, Env))
       end},
      {"Sender account has insufficient funds to cover tx fee + amount",
       fun() ->
@@ -47,10 +66,10 @@ check_test_() ->
               ?assertEqual(12, aetx:nonce(SpendTx)),
               ?assertEqual(20000, aetx:fee(SpendTx)),
 
-              SenderAccount = new_account(#{pubkey => ?SENDER_PUBKEY, balance => 55, nonce => 5}),
+              SenderAccount = new_account(#{pubkey => ?SENDER_PUBKEY, balance => 55, nonce => 11}),
               StateTree = aec_test_utils:create_state_tree_with_account(SenderAccount),
               Env = aetx_env:tx_env(20),
-              ?assertEqual({error, insufficient_funds}, aetx:check(SpendTx, StateTree, Env))
+              ?assertEqual({error, insufficient_funds}, aetx:process(SpendTx, StateTree, Env))
       end},
      {"Sender account has nonce higher than tx nonce",
       fun() ->
@@ -64,7 +83,7 @@ check_test_() ->
               StateTree = aec_test_utils:create_state_tree_with_account(SenderAccount),
               Env = aetx_env:tx_env(20),
               ?assertEqual({error, account_nonce_too_high},
-                           aetx:check(SpendTx, StateTree, Env))
+                           aetx:process(SpendTx, StateTree, Env))
       end},
       {"TX TTL is too small",
       fun() ->
@@ -78,10 +97,18 @@ check_test_() ->
               SenderAccount = new_account(#{pubkey => ?SENDER_PUBKEY, balance => 1000000, nonce => AccountNonce}),
               StateTree = aec_test_utils:create_state_tree_with_account(SenderAccount),
               Env = aetx_env:tx_env(20),
-              ?assertEqual({error, ttl_expired}, aetx:check(SpendTx, StateTree, Env))
-      end}].
+              ?assertEqual({error, ttl_expired}, aetx:process(SpendTx, StateTree, Env))
+      end}]}.
 
 process_test_() ->
+    {setup,
+     fun() ->
+              ok = meck:new(aec_governance, [passthrough]),
+              meck:expect(aec_governance, minimum_gas_price, 1, 1)
+     end,
+     fun(_) ->
+              meck:unload(aec_governance)
+     end,
     [{"Check and process valid spend tx",
       fun() ->
               SenderAccount = new_account(#{pubkey => ?SENDER_PUBKEY, balance => 1000000, nonce => 10}),
@@ -96,7 +123,6 @@ process_test_() ->
                                                  payload => <<"foo">>}),
               <<"foo">> = aec_spend_tx:payload(aetx:tx(SpendTx)),
               Env = aetx_env:tx_env(20),
-              {ok, StateTree0} = aetx:check(SpendTx, StateTree0, Env),
               {ok, StateTree} = aetx:process(SpendTx, StateTree0, Env),
 
               ResultAccountsTree = aec_trees:accounts(StateTree),
@@ -120,7 +146,6 @@ process_test_() ->
                                                  nonce => 11,
                                                  payload => <<"foo">>}),
               Env = aetx_env:tx_env(20),
-              {ok, StateTree0} = aetx:check(SpendTx, StateTree0, Env),
               {ok, StateTree} = aetx:process(SpendTx, StateTree0, Env),
 
               ResultAccountsTree = aec_trees:accounts(StateTree),
@@ -128,6 +153,22 @@ process_test_() ->
 
               ?assertEqual(1000000 - 50 - 20000 + 50, aec_accounts:balance(ResultAccount)),
               ?assertEqual(11, aec_accounts:nonce(ResultAccount))
+      end},
+      {"Check spend to oneself with too high amount",
+       fun() ->
+              %% The sender has enough to cover the fee, so the resulting
+              %% balance would be ok, but this is still not allowed.
+              SenderAccount = new_account(#{pubkey => ?SENDER_PUBKEY, balance => 20049, nonce => 10}),
+              StateTree0 = aec_test_utils:create_state_tree_with_accounts([SenderAccount]),
+
+              {ok, SpendTx} = ?TEST_MODULE:new(#{sender_id => ?SENDER_ID,
+                                                 recipient_id => ?SENDER_ID,
+                                                 amount => 50,
+                                                 fee => 20000,
+                                                 nonce => 11,
+                                                 payload => <<"foo">>}),
+              Env = aetx_env:tx_env(20),
+              {error, insufficient_funds} = aetx:process(SpendTx, StateTree0, Env)
       end},
       {"Check gas is higher with bigger payload",
        fun() ->
@@ -149,7 +190,7 @@ process_test_() ->
                                                   payload => <<"foo bar">>}),
 
               ?assert(aetx:gas_limit(SpendTx1, 1) < aetx:gas_limit(SpendTx2, 1))
-       end}].
+       end}]}.
 
 spend_tx(Data) ->
     DefaultData = #{sender_id => ?SENDER_ID,

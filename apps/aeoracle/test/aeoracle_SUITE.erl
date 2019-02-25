@@ -8,6 +8,8 @@
 %% common_test exports
 -export([ all/0
         , groups/0
+        , init_per_testcase/2
+        , end_per_testcase/2
         ]).
 
 %% test case exports
@@ -41,6 +43,7 @@
 -include_lib("apps/aecore/include/blocks.hrl").
 -include_lib("apps/aeoracle/include/oracle_txs.hrl").
 -include_lib("apps/aecontract/src/aecontract.hrl").
+-include_lib("apps/aecontract/include/hard_forks.hrl").
 
 -define(GENESIS_HEIGHT, aec_block_genesis:height()).
 
@@ -82,6 +85,18 @@ groups() ->
                    ]}
     ].
 
+init_per_testcase(register_oracle_negative, Config) ->
+    meck:new(aec_hard_forks, [passthrough]),
+    Config;
+init_per_testcase(_, Config) ->
+    Config.
+
+end_per_testcase(register_oracle_negative,_Config) ->
+    meck:unload(aec_hard_forks),
+    ok;
+end_per_testcase(_,_Config) ->
+    ok.
+
 %%%===================================================================
 %%% Register oracle
 %%%===================================================================
@@ -96,32 +111,47 @@ register_oracle_negative(_Cfg) ->
     BadPubKey = <<42:32/unit:8>>,
     RTx1      = aeo_test_utils:register_tx(BadPubKey, S1),
     Env       = aetx_env:tx_env(CurrHeight),
-    {error, account_not_found} = aetx:check(RTx1, Trees, Env),
+    {error, account_not_found} = aetx:process(RTx1, Trees, Env),
 
     %% Insufficient funds
     S2     = aeo_test_utils:set_account_balance(PubKey, 0, S1),
     Trees2 = aeo_test_utils:trees(S2),
     RTx2 = aeo_test_utils:register_tx(PubKey, S1),
-    {error, insufficient_funds} = aetx:check(RTx2, Trees2, Env),
+    {error, insufficient_funds} = aetx:process(RTx2, Trees2, Env),
 
     %% Test too high account nonce
     RTx3 = aeo_test_utils:register_tx(PubKey, #{nonce => 0}, S1),
-    {error, account_nonce_too_high} = aetx:check(RTx3, Trees, Env),
+    {error, account_nonce_too_high} = aetx:process(RTx3, Trees, Env),
 
     %% Test too low fee
     RTx4 = aeo_test_utils:register_tx(PubKey, #{fee => 0}, S1),
-    {error, too_low_fee} = aetx:check(RTx4, Trees, Env),
+    {error, too_low_fee} = aetx:process(RTx4, Trees, Env),
 
     %% Test too low TTL
     RTx5 = aeo_test_utils:register_tx(PubKey, #{ttl => 1}, S1),
-    {error, ttl_expired} = aetx:check(RTx5, Trees, aetx_env:set_height(Env, 2)),
+    {error, ttl_expired} = aetx:process(RTx5, Trees, aetx_env:set_height(Env, 2)),
 
     %% Test wrong VM version
-    RTx6 = aeo_test_utils:register_tx(PubKey, #{vm_version => 42}, S1),
-    RTx7 = aeo_test_utils:register_tx(PubKey, #{vm_version => ?AEVM_01_Solidity_01}, S1),
-    {error, bad_vm_version} = aetx:check(RTx6, Trees, aetx_env:set_height(Env, 2)),
-    {error, bad_vm_version} = aetx:check(RTx7, Trees, aetx_env:set_height(Env, 2)),
+    RTx6 = aeo_test_utils:register_tx(PubKey, #{abi_version => 42}, S1),
+    RTx7 = aeo_test_utils:register_tx(PubKey, #{abi_version => ?ABI_SOLIDITY_1}, S1),
+    {error, bad_abi_version} = aetx:process(RTx6, Trees, aetx_env:set_height(Env, 2)),
+    {error, bad_abi_version} = aetx:process(RTx7, Trees, aetx_env:set_height(Env, 2)),
 
+    %% Test bad format strings
+    ABISophia = #{abi_version => ?ABI_SOPHIA_1,
+                  query_format => aeso_heap:to_binary(word),
+                  response_format => aeso_heap:to_binary(word)
+                 },
+    RTx8 = aeo_test_utils:register_tx(PubKey, ABISophia#{query_format => <<"foo">>}, S1),
+    RTx9 = aeo_test_utils:register_tx(PubKey, ABISophia#{response_format => <<"foo">>}, S1),
+    RTx10 = aeo_test_utils:register_tx(PubKey, ABISophia, S1),
+    meck:expect(aec_hard_forks, protocol_effective_at_height, fun(_) -> ?ROMA_PROTOCOL_VSN end),
+    ?assertMatch({ok, _}, aetx:process(RTx8, Trees, Env)),
+    ?assertMatch({ok, _}, aetx:process(RTx9, Trees, Env)),
+    meck:expect(aec_hard_forks, protocol_effective_at_height, fun(_) -> ?MINERVA_PROTOCOL_VSN end),
+    ?assertEqual({error, bad_query_format}, aetx:process(RTx8, Trees, Env)),
+    ?assertEqual({error, bad_response_format}, aetx:process(RTx9, Trees, Env)),
+    ?assertMatch({ok, _}, aetx:process(RTx10, Trees, Env)),
     ok.
 
 register_oracle_negative_dynamic_fee(_Cfg) ->
@@ -132,7 +162,7 @@ register_oracle_negative_dynamic_fee(_Cfg) ->
 
     F = fun(RegTxOpts) ->
             Tx = aeo_test_utils:register_tx(PubKey, RegTxOpts, S1),
-            aetx:check(Tx, Trees, Env)
+            aetx:process(Tx, Trees, Env)
         end,
 
     %% Test minimum fee for increasing TTL.
@@ -158,7 +188,7 @@ register_oracle_negative_absolute_ttl(_Cfg) ->
 
     F = fun(RegTxOpts) ->
             Tx = aeo_test_utils:register_tx(PubKey, RegTxOpts, S1),
-            aetx:check(Tx, Trees, Env)
+            aetx:process(Tx, Trees, Env)
         end,
 
     ?assertEqual({error, too_low_abs_ttl}, F(#{oracle_ttl => {block, 0}, fee => 20000})),
@@ -197,11 +227,11 @@ extend_oracle_negative(Cfg) ->
     BadPubKey = <<42:32/unit:8>>,
     RTx1      = aeo_test_utils:extend_tx(BadPubKey, S1),
     Env       = aetx_env:tx_env(CurrHeight),
-    {error, account_not_found} = aetx:check(RTx1, Trees, Env),
+    {error, account_not_found} = aetx:process(RTx1, Trees, Env),
 
     %% Test extending non-existent oracle
     RTx2 = aeo_test_utils:extend_tx(PubKey, S1),
-    {error, account_is_not_an_active_oracle} = aetx:check(RTx2, Trees, Env),
+    {error, account_is_not_an_active_oracle} = aetx:process(RTx2, Trees, Env),
 
     %% Register the oracle
     {OracleKey, S2} = register_oracle(Cfg),
@@ -213,19 +243,19 @@ extend_oracle_negative(Cfg) ->
     S3     = aeo_test_utils:set_account_balance(OracleKey, 0, S2),
     Trees3 = aeo_test_utils:trees(S3),
     RTx3 = aeo_test_utils:extend_tx(OracleKey, S3),
-    {error, insufficient_funds} = aetx:check(RTx3, Trees3, Env2),
+    {error, insufficient_funds} = aetx:process(RTx3, Trees3, Env2),
 
     %% Test too high account nonce
     RTx4 = aeo_test_utils:extend_tx(OracleKey, #{nonce => 0}, S2),
-    {error, account_nonce_too_high} = aetx:check(RTx4, Trees2, Env2),
+    {error, account_nonce_too_high} = aetx:process(RTx4, Trees2, Env2),
 
     %% Test too low fee
     RTx5 = aeo_test_utils:extend_tx(OracleKey, #{fee => 0}, S2),
-    {error, too_low_fee} = aetx:check(RTx5, Trees2, Env),
+    {error, too_low_fee} = aetx:process(RTx5, Trees2, Env),
 
     %% Test too low TTL
     RTx6 = aeo_test_utils:extend_tx(OracleKey, #{ttl => CurrHeight2 - 1}, S2),
-    {error, ttl_expired} = aetx:check(RTx6, Trees2, Env2),
+    {error, ttl_expired} = aetx:process(RTx6, Trees2, Env2),
     ok.
 
 extend_oracle_negative_dynamic_fee(Cfg) ->
@@ -236,7 +266,7 @@ extend_oracle_negative_dynamic_fee(Cfg) ->
 
     F = fun(ExtTxOpts) ->
             Tx = aeo_test_utils:extend_tx(OracleKey, ExtTxOpts, S2),
-            aetx:check(Tx, Trees2, Env)
+            aetx:process(Tx, Trees2, Env)
         end,
     %% Test minimum fee for increasing TTL.
     ?assertEqual({error, too_low_fee}, F(#{oracle_ttl => {delta, 0}, fee => 0})),
@@ -294,42 +324,42 @@ query_oracle_negative(Cfg) ->
     BadSenderKey = <<42:32/unit:8>>,
     OracleId     = aec_id:create(oracle, OracleKey),
     Q1 = aeo_test_utils:query_tx(BadSenderKey, OracleId, S2),
-    {error, account_not_found} = aetx:check(Q1, Trees, Env),
+    {error, account_not_found} = aetx:process(Q1, Trees, Env),
 
     %% Test unsufficient funds.
     S3     = aeo_test_utils:set_account_balance(SenderKey, 0, S2),
     Trees1 = aeo_test_utils:trees(S3),
     Q2     = aeo_test_utils:query_tx(SenderKey, OracleId, S2),
-    {error, insufficient_funds} = aetx:check(Q2, Trees1, Env),
+    {error, insufficient_funds} = aetx:process(Q2, Trees1, Env),
 
     %% Test too high nonce in account
     Q3 = aeo_test_utils:query_tx(SenderKey, OracleId, #{nonce => 0}, S2),
-    {error, account_nonce_too_high} = aetx:check(Q3, Trees, Env),
+    {error, account_nonce_too_high} = aetx:process(Q3, Trees, Env),
 
     %% Test too low fee
     Q4 = aeo_test_utils:query_tx(SenderKey, OracleId, #{fee => 0}, S2),
-    {error, too_low_fee} = aetx:check(Q4, Trees, Env),
+    {error, too_low_fee} = aetx:process(Q4, Trees, Env),
 
     %% Test bad oracle key
     BadOracleId = aec_id:create(oracle, <<42:32/unit:8>>),
     Q5 = aeo_test_utils:query_tx(SenderKey, BadOracleId, S2),
-    {error, oracle_does_not_exist} = aetx:check(Q5, Trees, Env),
+    {error, oracle_does_not_exist} = aetx:process(Q5, Trees, Env),
 
     %% Test too long query ttl
     Q6 = aeo_test_utils:query_tx(SenderKey, OracleId, #{ query_ttl => {block, 500} }, S2),
-    {error, too_long_ttl} = aetx:check(Q6, Trees, Env),
+    {error, too_long_ttl} = aetx:process(Q6, Trees, Env),
 
     %% Test too long response ttl
     Q7 = aeo_test_utils:query_tx(SenderKey, OracleId, #{ response_ttl => {delta, 500} }, S2),
-    {error, too_long_ttl} = aetx:check(Q7, Trees, Env),
+    {error, too_long_ttl} = aetx:process(Q7, Trees, Env),
 
     %% Test too short TTL
     Q8 = aeo_test_utils:query_tx(SenderKey, OracleId, #{ ttl => CurrHeight - 1 }, S2),
-    {error, ttl_expired} = aetx:check(Q8, Trees, Env),
+    {error, ttl_expired} = aetx:process(Q8, Trees, Env),
 
     %% Test too low query fee
     Q9 = aeo_test_utils:query_tx(SenderKey, OracleId, #{query_fee => RegisterQueryFee - 1}, S2),
-    {error, query_fee_too_low} = aetx:check(Q9, Trees, Env),
+    {error, query_fee_too_low} = aetx:process(Q9, Trees, Env),
     ok.
 
 query_oracle_negative_dynamic_fee(Cfg) ->
@@ -342,7 +372,7 @@ query_oracle_negative_dynamic_fee(Cfg) ->
 
     F = fun(QTxOpts) ->
             Tx = aeo_test_utils:query_tx(SenderKey, OracleId, QTxOpts, S2),
-            aetx:check(Tx, Trees, Env)
+            aetx:process(Tx, Trees, Env)
         end,
 
     %% Test minimum fee for increasing TTL.
@@ -360,8 +390,8 @@ query_oracle_negative_dynamic_fee(Cfg) ->
 
 query_oracle_type_check(_Cfg) ->
     RFmt = aeso_heap:to_binary(word),
-    F = fun(QFmt, Query, VMVersion) ->
-                {OracleKey, S}  = register_oracle([], #{vm_version => VMVersion,
+    F = fun(QFmt, Query, ABIVersion) ->
+                {OracleKey, S}  = register_oracle([], #{abi_version => ABIVersion,
                                                         query_format => QFmt,
                                                         response_format => RFmt
                                                        }),
@@ -371,23 +401,24 @@ query_oracle_type_check(_Cfg) ->
                 CurrHeight      = ?ORACLE_QUERY_HEIGHT,
                 Env             = aetx_env:tx_env(CurrHeight),
                 Tx = aeo_test_utils:query_tx(SenderKey, OracleId, #{query => Query}, S2),
-                aetx:check(Tx, Trees, Env)
+                aetx:process(Tx, Trees, Env)
         end,
     Int = aeso_heap:to_binary(1),
     IntFmt = aeso_heap:to_binary(word),
     String = aeso_heap:to_binary(<<"foo">>),
     StringFmt = aeso_heap:to_binary(string),
-    ?assertEqual({error, bad_format}, F(StringFmt, Int, ?AEVM_01_Sophia_01)),
-    ?assertEqual({error, bad_format}, F(StringFmt, <<123>>, ?AEVM_01_Sophia_01)),
-    ?assertEqual({error, bad_format}, F(IntFmt, <<>>, ?AEVM_01_Sophia_01)),
-    ?assertEqual({error, bad_format}, F(IntFmt, String, ?AEVM_01_Sophia_01)),
-    ?assertMatch({ok, _},             F(IntFmt, Int, ?AEVM_01_Sophia_01)),
-    ?assertMatch({ok, _},             F(StringFmt, String, ?AEVM_01_Sophia_01)),
+    ABI = aect_test_utils:latest_sophia_abi_version(),
+    ?assertEqual({error, bad_format}, F(StringFmt, Int, ABI)),
+    ?assertEqual({error, bad_format}, F(StringFmt, <<123>>, ABI)),
+    ?assertEqual({error, bad_format}, F(IntFmt, <<>>, ABI)),
+    ?assertEqual({error, bad_format}, F(IntFmt, String, ABI)),
+    ?assertMatch({ok, _},             F(IntFmt, Int, ABI)),
+    ?assertMatch({ok, _},             F(StringFmt, String, ABI)),
     %% For ?AEVM_NO_VM the format is always ok
-    ?assertMatch({ok, _},             F(StringFmt, String, ?AEVM_NO_VM)),
-    ?assertMatch({ok, _},             F(IntFmt, String, ?AEVM_NO_VM)),
-    ?assertMatch({ok, _},             F(StringFmt, Int, ?AEVM_NO_VM)),
-    ?assertMatch({ok, _},             F(IntFmt, String, ?AEVM_NO_VM)),
+    ?assertMatch({ok, _},             F(StringFmt, String, ?ABI_NO_VM)),
+    ?assertMatch({ok, _},             F(IntFmt, String, ?ABI_NO_VM)),
+    ?assertMatch({ok, _},             F(StringFmt, Int, ?ABI_NO_VM)),
+    ?assertMatch({ok, _},             F(IntFmt, String, ?ABI_NO_VM)),
     ok.
 
 query_oracle(Cfg) ->
@@ -427,31 +458,31 @@ query_response_negative(Cfg) ->
     %% Test bad oracle key
     BadOracleKey = <<42:32/unit:8>>,
     RTx1 = aeo_test_utils:response_tx(BadOracleKey, ID, <<"42">>, S1),
-    {error, no_matching_oracle_query} = aetx:check(RTx1, Trees, Env),
+    {error, no_matching_oracle_query} = aetx:process(RTx1, Trees, Env),
 
     %% Test too high nonce for account
     RTx2 = aeo_test_utils:response_tx(OracleKey, ID, <<"42">>, #{nonce => 0}, S1),
-    {error, account_nonce_too_high} = aetx:check(RTx2, Trees, Env),
+    {error, account_nonce_too_high} = aetx:process(RTx2, Trees, Env),
 
     %% Test fee too low
     RTx3 = aeo_test_utils:response_tx(OracleKey, ID, <<"42">>, #{fee => 0}, S1),
-    {error, too_low_fee} = aetx:check(RTx3, Trees, Env),
+    {error, too_low_fee} = aetx:process(RTx3, Trees, Env),
 
     %% Test too short TTL
     RTx4 = aeo_test_utils:response_tx(OracleKey, ID, <<"42">>, #{ttl => CurrHeight - 1}, S1),
-    {error, ttl_expired} = aetx:check(RTx4, Trees, Env),
+    {error, ttl_expired} = aetx:process(RTx4, Trees, Env),
 
     %% Test bad query id
     OIO = aeo_state_tree:get_query(OracleKey, ID, aec_trees:oracles(Trees)),
     BadId = aeo_query:id(aeo_query:set_sender_nonce(42, OIO)),
     RTx5 = aeo_test_utils:response_tx(OracleKey, BadId, <<"42">>, S1),
-    {error, no_matching_oracle_query} = aetx:check(RTx5, Trees, Env),
+    {error, no_matching_oracle_query} = aetx:process(RTx5, Trees, Env),
 
     %% Insufficient funds
     S2     = aeo_test_utils:set_account_balance(OracleKey, 1, S1),
     Trees2 = aeo_test_utils:trees(S2),
     RTx6 = aeo_test_utils:response_tx(OracleKey, ID, <<"42">>, S1),
-    {error, insufficient_funds} = aetx:check(RTx6, Trees2, Env),
+    {error, insufficient_funds} = aetx:process(RTx6, Trees2, Env),
     ok.
 
 query_response_negative_dynamic_fee(Cfg) ->
@@ -463,12 +494,10 @@ query_response_negative_dynamic_fee(Cfg) ->
                 CurrHeight = ?ORACLE_RSP_HEIGHT,
                 Env        = aetx_env:tx_env(CurrHeight),
                 Tx = aeo_test_utils:response_tx(OracleKey, ID, <<"42">>, RTxSpec, S1),
-                aetx:check(Tx, Trees, Env)
+                aetx:process(Tx, Trees, Env)
         end,
 
     %% Test minimum fee for increasing TTL.
-    ?assertException(error, {illegal,response_ttl,{delta,0}}, F({delta, 0}, 0)),
-    ?assertException(error, {illegal,response_ttl,{delta,0}}, F({delta, 0}, 16850)),
     ?assertEqual({error, too_low_fee}, F({delta, 1},    1)),
     ?assertMatch({ok, _}             , F({delta, 1},    16850)),
     ?assertMatch({ok, _}             , F({delta, 1000}, 16850)),
@@ -523,26 +552,26 @@ query_response_fee_depends_on_response_size(Cfg) ->
     %% Test oracle response tx with SmallResponse is accepted with MinimalFee
     RTx1        = aeo_test_utils:response_tx(OracleKey, ID, SmallResponse, #{fee => MinimalFee}, S1),
     MinimalFee1 = MinimalFee,
-    {ok, Trees} = aetx:check(RTx1, Trees, Env),
+    {ok, _}     = aetx:process(RTx1, Trees, Env),
 
     %% Test oracle response tx with BiggerResponse is not accepted with MinimalFee
     RTx2        = aeo_test_utils:response_tx(OracleKey, ID, BiggerResponse, #{fee => MinimalFee}, S1),
     MinimalFee2 = aetx:min_fee(RTx2, ?ORACLE_RSP_HEIGHT),
     true        = MinimalFee2 > MinimalFee1,
-    {error, too_low_fee} = aetx:check(RTx2, Trees, Env),
+    {error, too_low_fee} = aetx:process(RTx2, Trees, Env),
 
     %% Test oracle response tx with BiggerResponse is accepted with MinimalFee2
     RTx3        = aeo_test_utils:response_tx(OracleKey, ID, BiggerResponse, #{fee => MinimalFee2}, S1),
     MinimalFee3 = aetx:min_fee(RTx3, ?ORACLE_RSP_HEIGHT),
     MinimalFee3 = MinimalFee2,
-    {ok, Trees} = aetx:check(RTx3, Trees, Env),
+    {ok, _}     = aetx:process(RTx3, Trees, Env),
     ok.
 
 query_response_type_check(_Cfg) ->
     QFmt  = aeso_heap:to_binary(string),
     Query = aeso_heap:to_binary(<<"who?">>),
-    F = fun(RFmt, Resp, VMVersion) ->
-                RegisterOpts = #{vm_version => VMVersion,
+    F = fun(RFmt, Resp, ABIVersion) ->
+                RegisterOpts = #{abi_version => ABIVersion,
                                  query_format => QFmt,
                                  response_format => RFmt},
                 QueryOpts = #{query => Query},
@@ -551,23 +580,24 @@ query_response_type_check(_Cfg) ->
                 CurrHeight      = ?ORACLE_RSP_HEIGHT,
                 Env             = aetx_env:tx_env(CurrHeight),
                 Tx = aeo_test_utils:response_tx(OracleKey, ID, Resp, S),
-                aetx:check(Tx, Trees, Env)
+                aetx:process(Tx, Trees, Env)
         end,
     Int = aeso_heap:to_binary(1),
     IntFmt = aeso_heap:to_binary(word),
     String = aeso_heap:to_binary(<<"foo">>),
     StringFmt = aeso_heap:to_binary(string),
-    ?assertEqual({error, bad_format}, F(StringFmt, Int, ?AEVM_01_Sophia_01)),
-    ?assertEqual({error, bad_format}, F(StringFmt, <<123>>, ?AEVM_01_Sophia_01)),
-    ?assertEqual({error, bad_format}, F(IntFmt, <<>>, ?AEVM_01_Sophia_01)),
-    ?assertEqual({error, bad_format}, F(IntFmt, String, ?AEVM_01_Sophia_01)),
-    ?assertMatch({ok, _},             F(IntFmt, Int, ?AEVM_01_Sophia_01)),
-    ?assertMatch({ok, _},             F(StringFmt, String, ?AEVM_01_Sophia_01)),
-    %% For ?AEVM_NO_VM the format is always ok
-    ?assertMatch({ok, _},             F(StringFmt, String, ?AEVM_NO_VM)),
-    ?assertMatch({ok, _},             F(IntFmt, String, ?AEVM_NO_VM)),
-    ?assertMatch({ok, _},             F(StringFmt, Int, ?AEVM_NO_VM)),
-    ?assertMatch({ok, _},             F(IntFmt, String, ?AEVM_NO_VM)),
+    ABI = aect_test_utils:latest_sophia_abi_version(),
+    ?assertEqual({error, bad_format}, F(StringFmt, Int, ABI)),
+    ?assertEqual({error, bad_format}, F(StringFmt, <<123>>, ABI)),
+    ?assertEqual({error, bad_format}, F(IntFmt, <<>>, ABI)),
+    ?assertEqual({error, bad_format}, F(IntFmt, String, ABI)),
+    ?assertMatch({ok, _},             F(IntFmt, Int, ABI)),
+    ?assertMatch({ok, _},             F(StringFmt, String, ABI)),
+    %% For ?ABI_NO_VM the format is always ok
+    ?assertMatch({ok, _},             F(StringFmt, String, ?ABI_NO_VM)),
+    ?assertMatch({ok, _},             F(IntFmt, String, ?ABI_NO_VM)),
+    ?assertMatch({ok, _},             F(StringFmt, Int, ?ABI_NO_VM)),
+    ?assertMatch({ok, _},             F(IntFmt, String, ?ABI_NO_VM)),
     ok.
 
 %%%===================================================================
@@ -705,3 +735,4 @@ do_prune_until(N1, N1, Trees) ->
     aeo_state_tree:prune(N1, Trees);
 do_prune_until(N1, N2, Trees) ->
     do_prune_until(N1 + 1, N2, aeo_state_tree:prune(N1, Trees)).
+

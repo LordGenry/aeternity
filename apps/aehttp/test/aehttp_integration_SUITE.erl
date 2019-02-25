@@ -51,6 +51,7 @@
 -export(
    [
     get_account_by_pubkey/1,
+    get_account_by_pubkey_and_height/1,
     get_pending_account_transactions_by_pubkey/1
    ]).
 
@@ -143,7 +144,8 @@
     naming_system_manage_name/1,
     naming_system_broken_txs/1,
 
-    peers/1
+    peers/1,
+    sum_token_supply/1
    ]).
 
 %% test case exports
@@ -208,20 +210,14 @@
 %% channel websocket endpoints
 -export(
    [sc_ws_timeout_open/1,
-    sc_ws_open/1,
-    sc_ws_update/1,
-    sc_ws_update_fails_and_close/1,
-    sc_ws_send_messages_and_close/1,
-    sc_ws_conflict_and_close/1,
-    sc_ws_close/1,
-    sc_ws_close_mutual_initiator/1,
-    sc_ws_close_mutual_responder/1,
-    sc_ws_leave/1,
-    sc_ws_reestablish/1,
-    sc_ws_deposit_initiator_and_close/1,
-    sc_ws_deposit_responder_and_close/1,
-    sc_ws_withdraw_initiator_and_close/1,
-    sc_ws_withdraw_responder_and_close/1,
+    sc_ws_basic_open_close/1,
+    sc_ws_failed_update/1,
+    sc_ws_generic_messages/1,
+    sc_ws_update_conflict/1,
+    sc_ws_close_mutual/1,
+    sc_ws_leave_reestablish/1,
+    sc_ws_deposit/1,
+    sc_ws_withdraw/1,
     sc_ws_contracts/1,
     sc_ws_oracle_contract/1,
     sc_ws_nameservice_contract/1,
@@ -338,6 +334,7 @@ groups() ->
      {account_info, [sequence],
       [
        get_account_by_pubkey,
+       get_account_by_pubkey_and_height,
        get_pending_account_transactions_by_pubkey
       ]},
 
@@ -469,7 +466,8 @@ groups() ->
         node_beneficiary,
 
         % requested Endpoints
-        peers
+        peers,
+        sum_token_supply
       ]},
      {debug_endpoints, [sequence], [
         disabled_debug_endpoints,
@@ -521,78 +519,40 @@ groups() ->
      },
      {channel_websocket_legacy, [sequence],
       channel_websocket_sequence()
-     }
+     },
+     {continuous_sc_ws, [sequence],
+      [
+       %% both can deposit
+       sc_ws_deposit,
+       %% both can withdraw
+       sc_ws_withdraw,
+       %% ensure port is reusable
+       sc_ws_failed_update,
+       sc_ws_generic_messages,
+       sc_ws_update_conflict,
+       sc_ws_contracts,
+       %% both can refer on-chain objects - oracle
+       sc_ws_oracle_contract,
+       %% both can refer on-chain objects - name service
+       sc_ws_nameservice_contract,
+       %% both can refer on-chain objects - chain environment
+       sc_ws_enviroment_contract,
+       %% both can call a remote contract
+       sc_ws_remote_call_contract,
+       %% both can call a remote contract refering on-chain data
+       sc_ws_remote_call_contract_refering_onchain_data
+      ]}
     ].
 
 channel_websocket_sequence() ->
-    [{basic_open_close, [], [sc_ws_timeout_open,
-                             sc_ws_open,
-                             sc_ws_update,
-                             sc_ws_close]},
-     %% ensure port is reusable
-     {failed_update, [], [sc_ws_open,
-                          sc_ws_update_fails_and_close]},
-     {generic_messages, [], [sc_ws_open,
-                             sc_ws_send_messages_and_close]},
-     {update_conflict, [], [sc_ws_open,
-                            sc_ws_conflict_and_close]},
-     %% initiator can start close mutual
-     {initiator_can_start_close_mutual, [], [sc_ws_open,
-                                             sc_ws_update,
-                                             sc_ws_close_mutual_initiator]},
-     %% responder can start close mutual
-     {responder_can_start_close_mutual, [], [sc_ws_open,
-                                             sc_ws_update,
-                                             sc_ws_close_mutual_responder]},
-     %% possible to leave and reestablish channel
-     {leave_reestablish, [], [sc_ws_open,
-                              sc_ws_leave,
-                              sc_ws_reestablish,
-                              sc_ws_update,
-                              sc_ws_close_mutual_initiator]},
-     %% initiator can make a deposit
-     {initiator_deposit, [], [sc_ws_open,
-                              sc_ws_update,
-                              sc_ws_deposit_initiator_and_close]},
-     %% responder can make a deposit
-     {responder_deposit, [], [sc_ws_open,
-                              sc_ws_update,
-                              sc_ws_deposit_responder_and_close]},
-     %% initiator can make a withdrawal
-     {initiator_withdrawal, [], [sc_ws_open,
-                                 sc_ws_update,
-                                 sc_ws_withdraw_initiator_and_close]},
-     %% responder can make a withdrawal
-     {responder_withdrawal, [], [sc_ws_open,
-                                 sc_ws_update,
-                                 sc_ws_withdraw_responder_and_close]},
-     %% responder can make a withdrawal
-     {contracts, [], [sc_ws_open,
-                      sc_ws_update,
-                      sc_ws_contracts]},
-     %% both can refer on-chain objects - oracle
-     {onchain_objects_oracles, [], [sc_ws_open,
-                                    sc_ws_update,
-                                    sc_ws_oracle_contract]},
-     %% both can refer on-chain objects - name service
-     {onchain_objects_names, [], [sc_ws_open,
-                                  sc_ws_update,
-                                  sc_ws_nameservice_contract]},
-
-     %% both can refer on-chain objects - chain environment
-     {onchain_objects_chain_env, [], [sc_ws_open,
-                                      sc_ws_update,
-                                      sc_ws_enviroment_contract]},
-
-     %% both can call a remote contract
-     {both_can_call_remote_contract, [], [sc_ws_open,
-                                          sc_ws_update,
-                                          sc_ws_remote_call_contract]},
-
-     %% both can call a remote contract
-     {both_can_call_remote_contract_onchain, [], [sc_ws_open,
-                                                  sc_ws_update,
-                                                  sc_ws_remote_call_contract_refering_onchain_data]}
+    [
+      sc_ws_timeout_open,
+      sc_ws_basic_open_close,
+      %% both can start close mutual
+      sc_ws_close_mutual,
+      %% possible to leave and reestablish channel
+      sc_ws_leave_reestablish,
+      {group, continuous_sc_ws}
     ].
 
 
@@ -612,6 +572,8 @@ init_per_suite(Config) ->
 end_per_suite(_Config) ->
     ok.
 
+init_per_group(continuous_sc_ws, Config) ->
+    sc_ws_open_(Config);
 init_per_group(all, Config) ->
     Config;
 init_per_group(Group, Config) when
@@ -691,8 +653,9 @@ init_per_group(account_with_balance = Group, Config) ->
     {_, Pubkey} = aecore_suite_utils:sign_keys(NodeId),
     ToMine = max(2, aecore_suite_utils:latest_fork_height()),
     aecore_suite_utils:mine_key_blocks(Node, ToMine),
-    {ok, [KeyBlock]} = aecore_suite_utils:mine_key_blocks(Node, 1),
-    true = aec_blocks:is_key_block(KeyBlock),
+    {ok, [KeyBlock1, KeyBlock2]} = aecore_suite_utils:mine_key_blocks(Node, 2),
+    true = aec_blocks:is_key_block(KeyBlock1),
+    true = aec_blocks:is_key_block(KeyBlock2),
     [{account_id, aehttp_api_encoder:encode(account_pubkey, Pubkey)},
      {account_exists, true} | Config1];
 init_per_group(account_with_pending_tx, Config) ->
@@ -805,6 +768,8 @@ end_per_group(Group, _Config) when
       Group =:= account_info;
       Group =:= tx_info ->
     ok;
+end_per_group(continuous_sc_ws, Config) ->
+    sc_ws_close_(Config);
 end_per_group(account_with_pending_tx, _Config) ->
     ok;
 end_per_group(oracle_txs, _Config) ->
@@ -1183,7 +1148,7 @@ post_key_block(_CurrentBlockType, Config) ->
     {ok, KeyBlockHeader} = aec_headers:deserialize_from_client(key, KeyBlock1),
     KeyBlockHeaderBin = aec_headers:serialize_to_binary(KeyBlockHeader),
     Target = aec_headers:target(KeyBlockHeader),
-    Nonce = aec_pow:pick_nonce(),
+    Nonce = aeminer_pow:pick_nonce(),
     {ok, {Nonce1, PowEvidence}} = mine_key_block(KeyBlockHeaderBin, Target, Nonce, 1000),
     {ok, 200, #{}} = post_key_blocks_sut(PendingKeyBlock#{<<"pow">> => PowEvidence, <<"nonce">> => Nonce1}),
     ok = aecore_suite_utils:wait_for_height(?config(node, Config), Height),
@@ -1194,15 +1159,15 @@ post_key_block(_CurrentBlockType, Config) ->
     ok.
 
 mine_key_block(HeaderBir, Target, Nonce, Attempts) when Attempts > 0 ->
-    [Config] = rpc(aec_pow_cuckoo, get_miner_configs, []),
+    [Config] = rpc(aec_mining, get_miner_configs, []),
     mine_key_block(HeaderBir, Target, Nonce, Config, Attempts).
 
 mine_key_block(HeaderBin, Target, Nonce, Config, Attempts) when Attempts > 0 ->
-    case rpc(aec_mining, mine, [HeaderBin, Target, Nonce, Config, 0]) of
+    case rpc(aec_mining, generate, [HeaderBin, Target, Nonce, Config, 0]) of
         {ok, {_Nonce, _PowEvidence}} = Res ->
             Res;
         {error, no_solution} ->
-            mine_key_block(HeaderBin, Target, aec_pow:next_nonce(Nonce, Config), Config, Attempts - 1)
+            mine_key_block(HeaderBin, Target, aeminer_pow:next_nonce(Nonce, Config), Config, Attempts - 1)
     end;
 mine_key_block(_HeaderBin, _Target, _Nonce, _Config, 0) ->
     {error, no_solution}.
@@ -1447,6 +1412,57 @@ get_account_by_pubkey(true, Config) ->
     %% TODO: check nonce?
     ok.
 
+get_account_by_pubkey_and_height(Config) ->
+    get_account_by_pubkey_and_height(?config(account_exists, Config), Config).
+
+get_account_by_pubkey_and_height(false, Config) ->
+    AccountId = ?config(account_id, Config),
+    Header = rpc(?NODE, aec_chain, top_header, []),
+    {ok, Hash} = aec_headers:hash_header(Header),
+    EncodedHash = aehttp_api_encoder:encode(key_block_hash, Hash),
+    Height = aec_headers:height(Header),
+    {ok, 404, Error1} = get_accounts_by_pubkey_and_height_sut(AccountId, Height),
+    {ok, 404, Error1} = get_accounts_by_pubkey_and_hash_sut(AccountId, EncodedHash),
+    ?assertEqual(<<"Account not found">>, maps:get(<<"reason">>, Error1)),
+    {ok, 404, Error2} = get_accounts_by_pubkey_and_height_sut(AccountId, Height + 2),
+    ?assertEqual(<<"Height not available">>, maps:get(<<"reason">>, Error2)),
+    BadHash = case Hash of
+                  <<1:1, Rest/bits>> -> <<0:1, Rest/bits>>;
+                  <<0:1, Rest/bits>> -> <<1:1, Rest/bits>>
+              end,
+    EncodedBadHash = aehttp_api_encoder:encode(key_block_hash, BadHash),
+    {ok, 404, Error3} = get_accounts_by_pubkey_and_hash_sut(AccountId, EncodedBadHash),
+    ?assertEqual(<<"Hash not available">>, maps:get(<<"reason">>, Error3)),
+    BadPrefixHash = aehttp_api_encoder:encode(contract_pubkey, Hash),
+    {ok, 400, Error4} = get_accounts_by_pubkey_and_hash_sut(AccountId, BadPrefixHash),
+    ?assertEqual(<<"Illegal hash: invalid_prefix">>, maps:get(<<"reason">>, Error4)),
+    {ok, 400, Error5} = get_accounts_by_pubkey_and_hash_sut(AccountId, <<"Hello">>),
+    ?assertEqual(<<"Illegal hash: invalid_encoding">>, maps:get(<<"reason">>, Error5)),
+
+    ok;
+get_account_by_pubkey_and_height(true, Config) ->
+    AccountId = ?config(account_id, Config),
+    Header = rpc(?NODE, aec_chain, top_header, []),
+    Height = aec_headers:height(Header),
+    {ok, Hash} = aec_headers:hash_header(Header),
+    PrevHash = aec_headers:prev_hash(Header),
+    EncodedHash = aehttp_api_encoder:encode(key_block_hash, Hash),
+    EncodedPrevHash = aehttp_api_encoder:encode(key_block_hash, PrevHash),
+    {ok, 200, Account1} = get_accounts_by_pubkey_and_height_sut(AccountId, Height - 1),
+    {ok, 200, Account2} = get_accounts_by_pubkey_and_height_sut(AccountId, Height),
+    {ok, 200, Account1} = get_accounts_by_pubkey_and_hash_sut(AccountId, EncodedPrevHash),
+    {ok, 200, Account2} = get_accounts_by_pubkey_and_hash_sut(AccountId, EncodedHash),
+    ?assertEqual(AccountId, maps:get(<<"id">>, Account1)),
+    ?assertEqual(AccountId, maps:get(<<"id">>, Account2)),
+    ?assert(maps:get(<<"balance">>, Account1) > 0),
+    ?assert(maps:get(<<"balance">>, Account2) > maps:get(<<"balance">>, Account1)),
+    {ok, 404, Error1} = get_accounts_by_pubkey_and_height_sut(AccountId, 0),
+    ?assertEqual(<<"Account not found">>, maps:get(<<"reason">>, Error1)),
+    {ok, 404, Error2} = get_accounts_by_pubkey_and_height_sut(AccountId, Height + 2),
+    ?assertEqual(<<"Height not available">>, maps:get(<<"reason">>, Error2)),
+    ok.
+
+
 get_pending_account_transactions_by_pubkey(Config) ->
     get_pending_account_transactions_by_pubkey(?config(account_exists, Config), Config).
 
@@ -1466,6 +1482,17 @@ get_pending_account_transactions_by_pubkey(true, Config) ->
 get_accounts_by_pubkey_sut(Id) ->
     Host = external_address(),
     http_request(Host, get, "accounts/" ++ http_uri:encode(Id), []).
+
+get_accounts_by_pubkey_and_hash_sut(Id, Hash) ->
+    Host = external_address(),
+    IdS = binary_to_list(http_uri:encode(Id)),
+    http_request(Host, get, "accounts/" ++ IdS ++ "/hash/" ++ Hash, []).
+
+get_accounts_by_pubkey_and_height_sut(Id, Height) ->
+    Host = external_address(),
+    IdS = binary_to_list(http_uri:encode(Id)),
+    HeightS = integer_to_list(Height),
+    http_request(Host, get, "accounts/" ++ IdS ++ "/height/" ++ HeightS, []).
 
 get_accounts_transactions_pending_by_pubkey_sut(Id) ->
     Host = external_address(),
@@ -1540,15 +1567,16 @@ post_contract_and_call_tx(_Config) ->
     {ok, Code} = aehttp_api_encoder:safe_decode(contract_bytearray, EncodedCode),
     {ok, EncodedInitCallData} = aehttp_logic:contract_encode_call_data(
                                   <<"sophia">>, Code, <<"init">>, <<"()">>),
-    ValidEncoded = #{ owner_id   => Pubkey,
-                      code       => EncodedCode,
-                      vm_version => 1,
-                      deposit    => 2,
-                      amount     => 1,
-                      gas        => 600,
-                      gas_price  => 1,
-                      fee        => 400000,
-                      call_data  => EncodedInitCallData},
+    ValidEncoded = #{ owner_id    => Pubkey,
+                      code        => EncodedCode,
+                      vm_version  => latest_sophia_vm(),
+                      abi_version => latest_sophia_abi(),
+                      deposit     => 2,
+                      amount      => 1,
+                      gas         => 600,
+                      gas_price   => 1,
+                      fee         => 400000,
+                      call_data   => EncodedInitCallData},
 
     %% prepare a contract_create_tx and post it
     {ok, 200, #{<<"tx">> := EncodedUnsignedContractCreateTx,
@@ -1571,7 +1599,7 @@ post_contract_and_call_tx(_Config) ->
                               <<"sophia">>, Code, <<"main">>, <<"42">>),
     ContractCallEncoded = #{ caller_id   => Pubkey,
                              contract_id => EncodedContractPubKey,
-                             vm_version  => 1,
+                             abi_version => latest_sophia_abi(),
                              amount      => 1,
                              gas         => 1000,
                              gas_price   => 1,
@@ -1625,15 +1653,16 @@ get_contract(_Config) ->
                                                InitArgument),
 
     ContractInitBalance = 1,
-    ValidEncoded = #{ owner_id   => MinerAddress,
-                      code       => EncodedCode,
-                      vm_version => 1,
-                      deposit    => 2,
-                      amount     => ContractInitBalance,
-                      gas        => 600,
-                      gas_price  => 1,
-                      fee        => 200000,
-                      call_data  => EncodedInitCallData},
+    ValidEncoded = #{ owner_id    => MinerAddress,
+                      code        => EncodedCode,
+                      vm_version  => latest_sophia_vm(),
+                      abi_version => latest_sophia_abi(),
+                      deposit     => 2,
+                      amount      => ContractInitBalance,
+                      gas         => 600,
+                      gas_price   => 1,
+                      fee         => 200000,
+                      call_data   => EncodedInitCallData},
 
     ValidDecoded = maps:merge(ValidEncoded,
                               #{owner_id  => aec_id:create(account, MinerPubkey),
@@ -1661,11 +1690,15 @@ get_contract(_Config) ->
 
     {ok, 200, #{<<"return_value">> := _InitStateAndType}} = get_contract_call_object(ContractCreateTxHash),
 
+    VM = latest_sophia_vm(),
+    ABI = latest_sophia_abi(),
+
     ?assertMatch({ok, 200, #{<<"id">>          := EncodedContractPubKey,
                              <<"owner_id">>    := MinerAddress,
                              <<"active">>      := true,
                              <<"deposit">>     := 2,
-                             <<"vm_version">>  := 1,
+                             <<"vm_version">>  := VM,
+                             <<"abi_version">> := ABI,
                              <<"referrer_ids">> := [],
                              <<"log">>         := <<>>}},
                  get_contract_sut(EncodedContractPubKey)),
@@ -1974,7 +2007,8 @@ contract_transactions(_Config) ->    % miner has an account
     ContractInitBalance = 1,
     ValidEncoded = #{ owner_id => MinerAddress,
                       code => EncodedCode,
-                      vm_version => 1,
+                      vm_version => latest_sophia_vm(),
+                      abi_version => latest_sophia_abi(),
                       deposit => 2,
                       amount => ContractInitBalance,
                       gas => 600,
@@ -2063,7 +2097,7 @@ contract_transactions(_Config) ->    % miner has an account
 
     ContractCallEncoded = #{ caller_id => MinerAddress,
                              contract_id => EncodedContractPubKey,
-                             vm_version => 1,
+                             abi_version => latest_sophia_abi(),
                              amount => 1,
                              gas => 1000,
                              gas_price => 1,
@@ -2123,7 +2157,7 @@ contract_transactions(_Config) ->    % miner has an account
 
     ComputeCCallEncoded = #{ caller_id => MinerAddress,
                              contract_id => EncodedContractPubKey,
-                             vm_version => 1,
+                             abi_version => latest_sophia_abi(),
                              amount => 1,
                              gas => 1000,
                              gas_price => 1,
@@ -2217,7 +2251,7 @@ contract_transactions(_Config) ->    % miner has an account
     {ok, 400, #{<<"reason">> := <<"Not byte array: call_data">>}} =
         get_contract_call(maps:put(call_data, InvalidHex2, ContractCallEncoded)),
 
-    {ok, 400, #{<<"reason">> := <<"Failed to compute call_data, reason: bad argument">>}} =
+    {ok, 400, #{<<"reason">> := <<"Failed to compute call_data, reason: ", _/binary>>}} =
         get_contract_call_compute(maps:put(arguments, <<"garbadge">>,
                                            ComputeCCallEncoded)),
 
@@ -2244,7 +2278,8 @@ contract_create_compute_transaction(_Config) ->
     ContractInitBalance = 1,
     ValidEncoded = #{ owner_id => MinerAddress,
                       code => Code,
-                      vm_version => 1,
+                      vm_version => latest_sophia_vm(),
+                      abi_version => latest_sophia_abi(),
                       deposit => 2,
                       amount => ContractInitBalance,
                       gas => 600,
@@ -2267,7 +2302,7 @@ contract_create_compute_transaction(_Config) ->
     Argument = <<"(42)">>,
     ComputeCCallEncoded = #{ caller_id => MinerAddress,
                              contract_id => EncodedContractPubKey,
-                             vm_version => 1,
+                             abi_version => latest_sophia_abi(),
                              amount => 1,
                              gas => 1000,
                              gas_price => 1,
@@ -2309,15 +2344,16 @@ contract_create_transaction_init_error(_Config) ->
                               contract_bytearray_decode(EncodedCode),
                               <<"init">>, <<"(0x123, 0)">>),
     EncodedInitCallData = aehttp_api_encoder:encode(contract_bytearray, aeso_heap:to_binary({<<"init">>, {}})),
-    ValidEncoded = #{ owner_id   => MinerAddress,
-                      code       => EncodedCode,
-                      vm_version => 1,
-                      deposit    => 2,
-                      amount     => 1,
-                      gas        => 30,
-                      gas_price  => 1,
-                      fee        => 200000,
-                      call_data  => EncodedInitData},
+    ValidEncoded = #{ owner_id    => MinerAddress,
+                      code        => EncodedCode,
+                      vm_version  => latest_sophia_vm(),
+                      abi_version => latest_sophia_abi(),
+                      deposit     => 2,
+                      amount      => 1,
+                      gas         => 30,
+                      gas_price   => 1,
+                      fee         => 200000,
+                      call_data   => EncodedInitData},
     ValidDecoded = maps:merge(ValidEncoded,
         #{owner => MinerPubkey,
             code => contract_bytearray_decode(EncodedCode),
@@ -2369,6 +2405,7 @@ oracle_transactions(_Config) ->
                    response_format => <<"something else">>,
                    query_fee => 1,
                    fee => 100000,
+                   abi_version => 0, %% ABI_NO_VM - raw strings.
                    oracle_ttl => #{type => <<"block">>, value => 2000}},
     RegDecoded = maps:merge(RegEncoded,
                             #{account_id => aec_id:create(account, MinerPubkey),
@@ -2603,8 +2640,7 @@ nameservice_transaction_claim(MinerAddress, MinerPubkey) ->
     ?assertEqual(EncodedCHash, maps:get(<<"commitment_id">>, PreclaimTx)),
 
     %% Mine a block and check mempool empty again
-    {ok, _BS1} = aecore_suite_utils:mine_blocks_until_txs_on_chain(
-                    aecore_suite_utils:node_name(?NODE), [PreclaimTxHash], 10),
+    ok = wait_for_tx_hash_on_chain(PreclaimTxHash),
     {ok, []} = rpc(aec_tx_pool, peek, [infinity]),
 
     Encoded = #{account_id => MinerAddress,
@@ -3237,7 +3273,6 @@ naming_system_manage_name(_Config) ->
     TTL         = 10,
     {ok, NHash} = aens:get_name_hash(Name),
     Fee         = 100000,
-    Node        = aecore_suite_utils:node_name(?NODE),
 
     %% Check mempool empty
     {ok, []} = rpc(aec_tx_pool, peek, [infinity]),
@@ -3257,7 +3292,7 @@ naming_system_manage_name(_Config) ->
     ?assertEqual(EncodedCHash, maps:get(<<"commitment_id">>, PreclaimTx)),
 
     %% Mine a block and check mempool empty again
-    {ok,_BS1} = aecore_suite_utils:mine_blocks_until_txs_on_chain(Node, [PreclaimTxHash], 10),
+    ok = wait_for_tx_hash_on_chain(PreclaimTxHash),
     {ok, []} = rpc(aec_tx_pool, peek, [infinity]),
 
     %% Check fee taken from account
@@ -3273,7 +3308,7 @@ naming_system_manage_name(_Config) ->
     ClaimTxHash = sign_and_post_tx(ClaimTxEnc, PrivKey),
 
     %% Mine a block and check mempool empty again
-    {ok, _BS2} = aecore_suite_utils:mine_blocks_until_txs_on_chain(Node, [ClaimTxHash], 10),
+    ok = wait_for_tx_hash_on_chain(ClaimTxHash),
     {ok, []} = rpc(aec_tx_pool, peek, [infinity]),
 
     %% Check tx fee taken from account, claim fee locked,
@@ -3301,7 +3336,7 @@ naming_system_manage_name(_Config) ->
     UpdateTxHash = sign_and_post_tx(UpdateEnc, PrivKey),
 
     %% Mine a block and check mempool empty again
-    {ok,_BS3} = aecore_suite_utils:mine_blocks_until_txs_on_chain(Node, [UpdateTxHash], 10),
+    ok = wait_for_tx_hash_on_chain(UpdateTxHash),
     {ok, []} = rpc(aec_tx_pool, peek, [infinity]),
 
     {ok, 200, #{<<"balance">> := Balance3}} = get_accounts_by_pubkey_sut(PubKeyEnc),
@@ -3318,7 +3353,7 @@ naming_system_manage_name(_Config) ->
                     payload => <<"foo">>, sender_id => PubKeyEnc}),
     SpendTxHash = sign_and_post_tx(EncodedSpendTx, PrivKey),
 
-    {ok,_BS4} = aecore_suite_utils:mine_blocks_until_txs_on_chain(Node, [SpendTxHash], 10),
+    ok = wait_for_tx_hash_on_chain(SpendTxHash),
     {ok, []} = rpc(aec_tx_pool, peek, [infinity]),
 
     %% Only fee is lost as recipient = sender
@@ -3335,7 +3370,7 @@ naming_system_manage_name(_Config) ->
     TransferTxHash = sign_and_post_tx(TransferEnc, PrivKey),
 
     %% Mine a block and check mempool empty again
-    {ok,_BS5} = aecore_suite_utils:mine_blocks_until_txs_on_chain(Node, [TransferTxHash], 10),
+    ok = wait_for_tx_hash_on_chain(TransferTxHash),
     {ok, []} = rpc(aec_tx_pool, peek, [infinity]),
 
     %% Check balance
@@ -3350,7 +3385,7 @@ naming_system_manage_name(_Config) ->
     RevokeTxHash = sign_and_post_tx(RevokeEnc, PrivKey),
 
     %% Mine a block and check mempool empty again
-    {ok,_BS6} = aecore_suite_utils:mine_blocks_until_txs_on_chain(Node, [RevokeTxHash], 10),
+    ok = wait_for_tx_hash_on_chain(RevokeTxHash),
     {ok, []} = rpc(aec_tx_pool, peek, [infinity]),
 
     %% Check balance
@@ -3432,7 +3467,7 @@ channel_sign_tx(ConnPid, Privkey, Tag, Config) ->
     ws_send(ConnPid, Tag,  #{tx => EncSignedCreateTx}, Config),
     Tx.
 
-sc_ws_open(Config) ->
+sc_ws_open_(Config) ->
     #{initiator := #{pub_key := IPubkey},
       responder := #{pub_key := RPubkey}} = proplists:get_value(participants, Config),
 
@@ -3479,8 +3514,10 @@ sc_ws_open(Config) ->
 
     ChannelClients = #{initiator => IConnPid,
                        responder => RConnPid},
-    {save_config, [{channel_clients, ChannelClients},
-                   {channel_options, ChannelOpts} | Config]}.
+    ok = ?WS:unregister_test_for_channel_events(IConnPid, [info, get, sign, on_chain_tx]),
+    ok = ?WS:unregister_test_for_channel_events(RConnPid, [info, get, sign, on_chain_tx]),
+    [{channel_clients, ChannelClients},
+     {channel_options, ChannelOpts} | Config].
 
 
 channel_send_conn_open_infos(RConnPid, IConnPid, Config) ->
@@ -3551,11 +3588,9 @@ channel_create(Config, IConnPid, RConnPid) ->
 
     ChannelCreateFee.
 
-sc_ws_update(Config) ->
-    {ok, ConfigList} = get_saved_config(
-                         Config, [sc_ws_open, sc_ws_reestablish]),
+sc_ws_update_(Config) ->
     Participants = proplists:get_value(participants, Config),
-    Conns = proplists:get_value(channel_clients, ConfigList),
+    Conns = proplists:get_value(channel_clients, Config),
     lists:foldl(
         fun(Sender, Round) ->
             channel_update(Conns, Sender, Participants, 1, Round, Config),
@@ -3567,97 +3602,6 @@ sc_ws_update(Config) ->
          responder,
          initiator,
          responder]),
-    {save_config, ConfigList}.
-
-sc_ws_update_fails_and_close(Config) ->
-    {sc_ws_open, ConfigList} = ?config(saved_config, Config),
-    Participants = proplists:get_value(participants, Config),
-    #{initiator := IConnPid, responder :=RConnPid} = Conns =
-        proplists:get_value(channel_clients, ConfigList),
-    lists:foreach(
-        fun(Sender) ->
-            LogPid = maps:get(Sender, Conns),
-            ?WS:log(LogPid, info, "Failing update, insufficient balance"),
-            {ok, #{<<"reason">> := <<"insufficient_balance">>,
-                  <<"request">> := _Request0}} = channel_update_fail(
-                                                   Conns, Sender,
-                                                   Participants, 10000000, Config),
-            ?WS:log(LogPid, info, "Failing update, negative amount"),
-            {ok, #{<<"reason">> := <<"negative_amount">>,
-                  <<"request">> := _Request1}} = channel_update_fail(
-                                                   Conns, Sender,
-                                                   Participants, -1, Config),
-            ?WS:log(LogPid, info, "Failing update, invalid pubkeys"),
-            {ok, #{<<"reason">> := <<"invalid_pubkeys">>,
-                  <<"request">> := _Request2}} =
-                channel_update_fail(Conns, Sender,
-                                    #{initiator => #{pub_key => <<42:32/unit:8>>},
-                                      responder => #{pub_key => <<43:32/unit:8>>}},
-                                    1, Config),
-            ok
-        end,
-        [initiator, responder]),
-    ok = ?WS:stop(IConnPid),
-    ok = ?WS:stop(RConnPid),
-    ok.
-
-sc_ws_send_messages_and_close(Config) ->
-    {sc_ws_open, ConfigList} = ?config(saved_config, Config),
-    #{initiator := #{pub_key := IPubkey},
-      responder := #{pub_key := RPubkey}} = proplists:get_value(participants, Config),
-    #{initiator := IConnPid, responder :=RConnPid} =
-        proplists:get_value(channel_clients, ConfigList),
-
-    lists:foreach(
-        fun({Sender, Msg}) ->
-            {SenderPubkey, ReceiverPubkey, SenderPid, ReceiverPid} =
-                case Sender of
-                    initiator ->
-                        {IPubkey, RPubkey, IConnPid, RConnPid};
-                    responder ->
-                        {RPubkey, IPubkey, RConnPid, IConnPid}
-                end,
-                SenderEncodedK = aehttp_api_encoder:encode(account_pubkey, SenderPubkey),
-                ReceiverEncodedK = aehttp_api_encoder:encode(account_pubkey, ReceiverPubkey),
-                ok = ?WS:register_test_for_channel_event(ReceiverPid, message),
-
-                ws_send(SenderPid, <<"message">>,
-                        #{<<"to">> => ReceiverEncodedK,
-                          <<"info">> => Msg}, Config),
-
-                {ok, #{<<"message">> := #{<<"from">> := SenderEncodedK,
-                                          <<"to">> := ReceiverEncodedK,
-                                          <<"info">> := Msg}}}
-                    = wait_for_channel_event(ReceiverPid, message, Config),
-                ok = ?WS:unregister_test_for_channel_event(ReceiverPid, message)
-        end,
-      [ {initiator, <<"hejsan">>}                   %% initiator can send
-      , {responder, <<"svejsan">>}                  %% responder can send
-      , {initiator, <<"first message in a row">>}   %% initiator can send two messages in a row
-      , {initiator, <<"second message in a row">>}
-      , {responder, <<"some message">>}             %% responder can send two messages in a row
-      , {responder, <<"other message">>}
-      ]),
-
-    ok = ?WS:stop(IConnPid),
-    ok = ?WS:stop(RConnPid),
-    ok.
-
-sc_ws_conflict_and_close(Config) ->
-    {sc_ws_open, ConfigList} = ?config(saved_config, Config),
-    Participants = proplists:get_value(participants, Config),
-    #{initiator := IConnPid, responder :=RConnPid} = Conns =
-        proplists:get_value(channel_clients, ConfigList),
-
-    lists:foreach(
-        fun(FirstSender) ->
-                channel_conflict(Conns, FirstSender, Participants, 1, 2, Config)
-        end,
-        [initiator,
-         responder]),
-
-    ok = ?WS:stop(IConnPid),
-    ok = ?WS:stop(RConnPid),
     ok.
 
 channel_conflict(#{initiator := IConnPid, responder :=RConnPid},
@@ -3814,9 +3758,7 @@ channel_update_fail(#{initiator := IConnPid, responder :=RConnPid},
     ok = ?WS:unregister_test_for_channel_event(StarterPid, error),
     Res.
 
-sc_ws_close(Config) ->
-    {sc_ws_update, ConfigList} = ?config(saved_config, Config),
-
+sc_ws_close_(ConfigList) ->
     #{initiator := IConnPid,
       responder := RConnPid} = proplists:get_value(channel_clients, ConfigList),
 
@@ -3852,25 +3794,17 @@ query_balances_(ConnPid, Accounts, <<"json-rpc">>) ->
             ConnPid, #{ <<"method">> => <<"channels.get.balances">>
                       , <<"params">> => #{<<"accounts">> => Accounts} })}.
 
-
-sc_ws_close_mutual_initiator(Config) ->
-    sc_ws_close_mutual(Config, initiator).
-
-sc_ws_close_mutual_responder(Config) ->
-    sc_ws_close_mutual(Config, responder).
-
-sc_ws_close_mutual(Config, Closer) when Closer =:= initiator
+sc_ws_close_mutual_(Config, Closer) when Closer =:= initiator
                                  orelse Closer =:= responder ->
-    {sc_ws_update, ConfigList} = ?config(saved_config, Config),
-    ct:log("ConfigList = ~p", [ConfigList]),
+    ct:log("ConfigList = ~p", [Config]),
     #{initiator := #{pub_key := IPubkey,
                     priv_key := IPrivkey},
       responder := #{pub_key := RPubkey,
                     priv_key := RPrivkey}} = proplists:get_value(participants,
-                                                                 ConfigList),
+                                                                 Config),
     {IStartB, RStartB} = channel_participants_balances(IPubkey, RPubkey),
     #{initiator := IConnPid,
-      responder := RConnPid} = proplists:get_value(channel_clients, ConfigList),
+      responder := RConnPid} = proplists:get_value(channel_clients, Config),
     ok = ?WS:register_test_for_channel_events(IConnPid, [sign, info, on_chain_tx]),
     ok = ?WS:register_test_for_channel_events(RConnPid, [sign, info, on_chain_tx]),
 
@@ -3915,11 +3849,9 @@ sc_ws_close_mutual(Config, Closer) when Closer =:= initiator
     {ok, 200, #{<<"transactions">> := []}} = get_pending_transactions(),
     ok.
 
-sc_ws_leave(Config) ->
-    {sc_ws_open, ConfigList} = ?config(saved_config, Config),
-
+sc_ws_leave_(Config) ->
     #{initiator := IConnPid,
-      responder := RConnPid} = proplists:get_value(channel_clients, ConfigList),
+      responder := RConnPid} = proplists:get_value(channel_clients, Config),
     ok = ?WS:register_test_for_channel_events(IConnPid, [leave, info]),
     ok = ?WS:register_test_for_channel_events(RConnPid, [leave, info]),
     ok = ?WS:register_test_for_events(IConnPid, websocket, [closed]),
@@ -3936,26 +3868,22 @@ sc_ws_leave(Config) ->
     ok = ?WS:wait_for_event(IConnPid, websocket, closed),
     ok = ?WS:wait_for_event(RConnPid, websocket, closed),
     %%
-    Options = proplists:get_value(channel_options, ConfigList),
+    Options = proplists:get_value(channel_options, Config),
     Port = maps:get(port, Options),
     RPort = Port+1,
     ReestablOptions = maps:merge(Options, #{existing_channel_id => IDi,
                                             offchain_tx => StI,
                                             port => RPort}),
-    {save_config, [{channel_reestabl_options, ReestablOptions} | Config]}.
+    ReestablOptions.
 
 
-sc_ws_reestablish(Config) ->
-    {sc_ws_leave, ConfigList} = ?config(saved_config, Config),
-    ReestablOptions = proplists:get_value(channel_reestabl_options, ConfigList),
+sc_ws_reestablish_(ReestablOptions, Config) ->
     {ok, RrConnPid} = channel_ws_start(responder, ReestablOptions, Config),
     {ok, IrConnPid} = channel_ws_start(initiator, maps:put(
                                                     host, <<"localhost">>,
                                                     ReestablOptions), Config),
-    ok = ?WS:register_test_for_channel_events(
-            RrConnPid, [info, update]),
-    ok = ?WS:register_test_for_channel_events(
-            IrConnPid, [info, update]),
+    ok = ?WS:register_test_for_channel_events(RrConnPid, [info, update]),
+    ok = ?WS:register_test_for_channel_events(IrConnPid, [info, update]),
     {ok, #{<<"event">> := <<"channel_reestablished">>}} =
         wait_for_channel_event(IrConnPid, info, Config),
     {ok, #{<<"event">> := <<"channel_reestablished">>}} =
@@ -3964,24 +3892,19 @@ sc_ws_reestablish(Config) ->
         wait_for_channel_event(IrConnPid, info, Config),
     {ok, #{<<"event">> := <<"open">>}} =
         wait_for_channel_event(RrConnPid, info, Config),
+    {ok, #{<<"state">> := NewState}} = wait_for_channel_event(IrConnPid, update, Config),
+    {ok, #{<<"state">> := NewState}} = wait_for_channel_event(RrConnPid, update, Config),
     ChannelClients = #{initiator => IrConnPid,
                        responder => RrConnPid},
-    {save_config, [{channel_clients, ChannelClients},
-                   {channel_options, ReestablOptions} | Config]}.
+    ok = ?WS:unregister_test_for_channel_events(RrConnPid, [info, update]),
+    ok = ?WS:unregister_test_for_channel_events(IrConnPid, [info, update]),
+    [{channel_clients, ChannelClients} | Config].
 
 
-sc_ws_deposit_initiator_and_close(Config) ->
-    sc_ws_deposit_and_close(Config, initiator).
-
-sc_ws_deposit_responder_and_close(Config) ->
-    sc_ws_deposit_and_close(Config, responder).
-
-
-sc_ws_deposit_and_close(Config, Origin) when Origin =:= initiator
+sc_ws_deposit_(Config, Origin) when Origin =:= initiator
                             orelse Origin =:= responder ->
-    {sc_ws_update, ConfigList} = ?config(saved_config, Config),
-    Participants= proplists:get_value(participants, ConfigList),
-    Clients = proplists:get_value(channel_clients, ConfigList),
+    Participants= proplists:get_value(participants, Config),
+    Clients = proplists:get_value(channel_clients, Config),
     {SenderRole, AckRole} =
         case Origin of
             initiator -> {initiator, responder};
@@ -4018,23 +3941,14 @@ sc_ws_deposit_and_close(Config, Origin) when Origin =:= initiator
 
     {ok, #{<<"event">> := <<"deposit_locked">>}} = wait_for_channel_event(SenderConnPid, info, Config),
     {ok, #{<<"event">> := <<"deposit_locked">>}} = wait_for_channel_event(AckConnPid, info, Config),
-
-    ok = ?WS:stop(SenderConnPid),
-    ok = ?WS:stop(AckConnPid),
+    ok = ?WS:unregister_test_for_channel_events(SenderConnPid, [sign, info, on_chain_tx]),
+    ok = ?WS:unregister_test_for_channel_events(AckConnPid, [sign, info, on_chain_tx]),
     ok.
 
-sc_ws_withdraw_initiator_and_close(Config) ->
-    sc_ws_withdraw_and_close(Config, initiator).
-
-sc_ws_withdraw_responder_and_close(Config) ->
-    sc_ws_withdraw_and_close(Config, responder).
-
-
-sc_ws_withdraw_and_close(Config, Origin) when Origin =:= initiator
-                            orelse Origin =:= responder ->
-    {sc_ws_update, ConfigList} = ?config(saved_config, Config),
-    Participants = proplists:get_value(participants, ConfigList),
-    Clients = proplists:get_value(channel_clients, ConfigList),
+sc_ws_withdraw_(Config, Origin) when Origin =:= initiator
+                              orelse Origin =:= responder ->
+    Participants = proplists:get_value(participants, Config),
+    Clients = proplists:get_value(channel_clients, Config),
     {SenderRole, AckRole} =
         case Origin of
             initiator -> {initiator, responder};
@@ -4070,10 +3984,8 @@ sc_ws_withdraw_and_close(Config, Origin) when Origin =:= initiator
 
     {ok, #{<<"event">> := <<"withdraw_locked">>}} = wait_for_channel_event(SenderConnPid, info, Config),
     {ok, #{<<"event">> := <<"withdraw_locked">>}} = wait_for_channel_event(AckConnPid, info, Config),
-
-
-    ok = ?WS:stop(SenderConnPid),
-    ok = ?WS:stop(AckConnPid),
+    ok = ?WS:unregister_test_for_channel_events(SenderConnPid, [sign, info, on_chain_tx]),
+    ok = ?WS:unregister_test_for_channel_events(AckConnPid, [sign, info, on_chain_tx]),
     ok.
 
 sc_ws_contracts(Config) ->
@@ -4085,105 +3997,39 @@ sc_ws_contracts(Config) ->
                           Test  <- ["identity",
                                     "counter",
                                     "spend_test"]]),
-    {sc_ws_update, ConfigList} = ?config(saved_config, Config),
-    #{initiator := IConnPid,
-      responder := RConnPid } = proplists:get_value(channel_clients, ConfigList),
-    ok = ?WS:stop(IConnPid),
-    ok = ?WS:stop(RConnPid),
     ok.
 
 sc_ws_oracle_contract(Config) ->
-
-    {sc_ws_update, ConfigList} = ?config(saved_config, Config),
-    #{initiator := IConnPid, responder := RConnPid} =
-        proplists:get_value(channel_clients, ConfigList),
-
-    ok = ?WS:register_test_for_channel_events(IConnPid, [sign, info, get, error]),
-    ok = ?WS:register_test_for_channel_events(RConnPid, [sign, info, get, error]),
-
-    [sc_ws_contract_generic(Role, fun sc_ws_oracle_contract_/8, Config, [])
+    [sc_ws_contract_generic_(Role, fun sc_ws_oracle_contract_/8, Config, [])
         || Role <- [initiator, responder]],
-
-    % cleanup
-    ok = ?WS:stop(IConnPid),
-    ok = ?WS:stop(RConnPid),
     ok.
 
 sc_ws_nameservice_contract(Config) ->
-
-    {sc_ws_update, ConfigList} = ?config(saved_config, Config),
-    #{initiator := IConnPid, responder := RConnPid} =
-        proplists:get_value(channel_clients, ConfigList),
-
-    ok = ?WS:register_test_for_channel_events(IConnPid, [sign, info, get, error]),
-    ok = ?WS:register_test_for_channel_events(RConnPid, [sign, info, get, error]),
-
-
-    [sc_ws_contract_generic(Role, fun sc_ws_nameservice_contract_/8, Config,
+    [sc_ws_contract_generic_(Role, fun sc_ws_nameservice_contract_/8, Config,
                             [])
         || Role <- [initiator,
                     responder]],
-
-    % cleanup
-    ok = ?WS:stop(IConnPid),
-    ok = ?WS:stop(RConnPid),
     ok.
 
 sc_ws_enviroment_contract(Config) ->
-    {sc_ws_update, ConfigList} = ?config(saved_config, Config),
-    #{initiator := IConnPid, responder := RConnPid} =
-        proplists:get_value(channel_clients, ConfigList),
-
-    ok = ?WS:register_test_for_channel_events(IConnPid, [sign, info, get, error]),
-    ok = ?WS:register_test_for_channel_events(RConnPid, [sign, info, get, error]),
-
-
-    [sc_ws_contract_generic(Role, fun sc_ws_enviroment_contract_/8, Config,
+    [sc_ws_contract_generic_(Role, fun sc_ws_enviroment_contract_/8, Config,
                             [])
         || Role <- [initiator,
                     responder]],
-
-    % cleanup
-    ok = ?WS:stop(IConnPid),
-    ok = ?WS:stop(RConnPid),
     ok.
 
 sc_ws_remote_call_contract(Config) ->
-    {sc_ws_update, ConfigList} = ?config(saved_config, Config),
-    #{initiator := IConnPid, responder := RConnPid} =
-        proplists:get_value(channel_clients, ConfigList),
-
-    ok = ?WS:register_test_for_channel_events(IConnPid, [sign, info, get, error]),
-    ok = ?WS:register_test_for_channel_events(RConnPid, [sign, info, get, error]),
-
-
-    [sc_ws_contract_generic(Role, fun sc_ws_remote_call_contract_/8, Config,
+    [sc_ws_contract_generic_(Role, fun sc_ws_remote_call_contract_/8, Config,
                             [])
         || Role <- [initiator,
                     responder]],
-
-    % cleanup
-    ok = ?WS:stop(IConnPid),
-    ok = ?WS:stop(RConnPid),
     ok.
 
 sc_ws_remote_call_contract_refering_onchain_data(Config) ->
-    {sc_ws_update, ConfigList} = ?config(saved_config, Config),
-    #{initiator := IConnPid, responder := RConnPid} =
-        proplists:get_value(channel_clients, ConfigList),
-
-    ok = ?WS:register_test_for_channel_events(IConnPid, [sign, info, get, error]),
-    ok = ?WS:register_test_for_channel_events(RConnPid, [sign, info, get, error]),
-
-
-    [sc_ws_contract_generic(Role, fun sc_ws_remote_call_contract_refering_onchain_data_/8, Config,
+    [sc_ws_contract_generic_(Role, fun sc_ws_remote_call_contract_refering_onchain_data_/8, Config,
                             [])
         || Role <- [initiator,
                     responder]],
-
-    % cleanup
-    ok = ?WS:stop(IConnPid),
-    ok = ?WS:stop(RConnPid),
     ok.
 
 random_unused_name() ->
@@ -4201,11 +4047,10 @@ random_unused_name(Attempts) ->
         _ -> random_unused_name(Attempts - 1)
     end.
 
-sc_ws_contract_generic(Origin, Fun, Config, Opts) ->
+sc_ws_contract_generic_(Origin, Fun, Config, Opts) ->
     %% get the infrastructure for users going
-    {sc_ws_update, ConfigList} = ?config(saved_config, Config),
-    Participants = proplists:get_value(participants, ConfigList),
-    Clients = proplists:get_value(channel_clients, ConfigList),
+    Participants = proplists:get_value(participants, Config),
+    Clients = proplists:get_value(channel_clients, Config),
     {SenderRole, AckRole} =
         case Origin of
             initiator -> {initiator, responder};
@@ -4217,6 +4062,8 @@ sc_ws_contract_generic(Origin, Fun, Config, Opts) ->
       priv_key:= AckPrivkey} = maps:get(AckRole, Participants),
     SenderConnPid = maps:get(SenderRole, Clients),
     AckConnPid = maps:get(AckRole, Clients),
+    ok = ?WS:register_test_for_channel_events(SenderConnPid, [sign, info, get, error]),
+    ok = ?WS:register_test_for_channel_events(AckConnPid, [sign, info, get, error]),
     SenderConnPid = maps:get(SenderRole, Clients),
     AckConnPid = maps:get(AckRole, Clients),
     %% helper lambda for update
@@ -4243,6 +4090,8 @@ sc_ws_contract_generic(Origin, Fun, Config, Opts) ->
     [Fun(Owner, GetVolley, SenderConnPid,
          AckConnPid, OwnerPubkey, OtherPubkey, Opts, Config)
         || {Owner, {OwnerPubkey, OtherPubkey}} <- Actors],
+    ok = ?WS:unregister_test_for_channel_events(SenderConnPid, [sign, info, get, error]),
+    ok = ?WS:unregister_test_for_channel_events(AckConnPid, [sign, info, get, error]),
     ok.
 
 sc_ws_oracle_contract_(Owner, GetVolley, ConnPid1, ConnPid2,
@@ -4260,7 +4109,7 @@ sc_ws_oracle_contract_(Owner, GetVolley, ConnPid1, ConnPid2,
                       response_format => SophiaStringType,
                       query_fee       => QueryFee,
                       query_ttl       => QueryTTL,
-                      vm_version      => ?AEVM_01_Sophia_01
+                      abi_version     => latest_sophia_abi()
                      }),
     OracleQuerySequence =
         fun(Q0, R0) ->
@@ -4284,10 +4133,11 @@ sc_ws_oracle_contract_(Owner, GetVolley, ConnPid1, ConnPid2,
                               <<"init">>, InitArgument),
     {CreateVolley, OwnerConnPid, OwnerPubKey} = GetVolley(Owner),
     ws_send_tagged(OwnerConnPid, <<"update">>, <<"new_contract">>,
-                   #{vm_version => 1,
-                     deposit    => 10,
-                     code       => EncodedCode,
-                     call_data  => EncodedInitData}, Config),
+                   #{vm_version  => latest_sophia_vm(),
+                     abi_version => latest_sophia_abi(),
+                     deposit     => 10,
+                     code        => EncodedCode,
+                     call_data   => EncodedInitData}, Config),
 
     UnsignedStateTx = CreateVolley(),
     ContractPubKey = contract_id_from_create_update(OwnerPubKey,
@@ -4384,10 +4234,11 @@ sc_ws_nameservice_contract_(Owner, GetVolley, ConnPid1, ConnPid2,
                               <<"init">>, InitArgument),
     {CreateVolley, OwnerConnPid, OwnerPubkey} = GetVolley(Owner),
     ws_send_tagged(OwnerConnPid, <<"update">>, <<"new_contract">>,
-                   #{vm_version => 1,
-                     deposit    => 10,
-                     code       => EncodedCode,
-                     call_data  => EncodedInitData}, Config),
+                   #{vm_version  => latest_sophia_vm(),
+                     abi_version => latest_sophia_abi(),
+                     deposit     => 10,
+                     code        => EncodedCode,
+                     call_data   => EncodedInitData}, Config),
 
     UnsignedStateTx = CreateVolley(),
     ContractPubKey = contract_id_from_create_update(OwnerPubkey,
@@ -4443,10 +4294,11 @@ sc_ws_enviroment_contract_(Owner, GetVolley, ConnPid1, ConnPid2,
                               <<"init">>, InitArgument),
     {CreateVolley, OwnerConnPid, OwnerPubkey} = GetVolley(Owner),
     ws_send_tagged(OwnerConnPid, <<"update">>, <<"new_contract">>,
-                   #{vm_version => 1,
-                     deposit    => 10,
-                     code       => EncodedCode,
-                     call_data  => EncodedInitData}, Config),
+                   #{vm_version  => latest_sophia_vm(),
+                     abi_version => latest_sophia_abi(),
+                     deposit     => 10,
+                     code        => EncodedCode,
+                     call_data   => EncodedInitData}, Config),
 
     UnsignedStateTx = CreateVolley(),
     ContractPubKey = contract_id_from_create_update(OwnerPubkey,
@@ -4502,10 +4354,11 @@ sc_ws_remote_call_contract_(Owner, GetVolley, ConnPid1, ConnPid2,
                                       InitArgument),
             {CreateVolley, OwnerConnPid, OwnerPubkey} = GetVolley(Owner),
             ws_send_tagged(OwnerConnPid, <<"update">>, <<"new_contract">>,
-                           #{vm_version => 1,
-                             deposit    => 10,
-                             code       => EncodedCode,
-                             call_data  => EncodedInitData}, Config),
+                           #{vm_version  => latest_sophia_vm(),
+                             abi_version => latest_sophia_abi(),
+                             deposit     => 10,
+                             code        => EncodedCode,
+                             call_data   => EncodedInitData}, Config),
 
             UnsignedStateTx = CreateVolley(),
             ContractPubKey = contract_id_from_create_update(OwnerPubkey,
@@ -4571,10 +4424,11 @@ sc_ws_remote_call_contract_refering_onchain_data_(Owner, GetVolley, ConnPid1, Co
                                       InitArgument),
             {CreateVolley, OwnerConnPid, OwnerPubkey} = GetVolley(Owner),
             ws_send_tagged(OwnerConnPid, <<"update">>, <<"new_contract">>,
-                           #{vm_version => 1,
-                             deposit    => 10,
-                             code       => EncodedCode,
-                             call_data  => EncodedInitData}, Config),
+                           #{vm_version  => latest_sophia_vm(),
+                             abi_version => latest_sophia_abi(),
+                             deposit     => 10,
+                             code        => EncodedCode,
+                             call_data   => EncodedInitData}, Config),
 
             UnsignedStateTx = CreateVolley(),
             ContractPubKey = contract_id_from_create_update(OwnerPubkey,
@@ -4742,9 +4596,8 @@ initialize_account(Amount) ->
 
     {ok, 200, #{<<"tx">> := SpendTx}} =
         post_spend_tx(aehttp_api_encoder:encode(account_pubkey, Pubkey), Amount, Fee),
-    sign_and_post_tx(SpendTx),
-    {ok, [_KeyBlock, MicroBlock]} = aecore_suite_utils:mine_blocks(Node, 2),
-    [_Spend1] = aec_blocks:txs(MicroBlock),
+    TxHash = sign_and_post_tx(SpendTx),
+    ok = wait_for_tx_hash_on_chain(TxHash),
     assert_balance(Pubkey, Amount),
     {Pubkey, Privkey}.
 
@@ -4757,10 +4610,8 @@ update_volley_(FirstConnPid, FirstPrivkey, SecondConnPid, SecondPrivkey, Config)
                                       <<"update_ack">>, Config).
 
 sc_ws_contract_(Config, TestName, Owner) ->
-    ct:log("Start processing contract ~p, initated by ~p", [TestName, Owner]),
-    {sc_ws_update, ConfigList} = ?config(saved_config, Config),
-    Participants = proplists:get_value(participants, ConfigList),
-    Clients = proplists:get_value(channel_clients, ConfigList),
+    Participants = proplists:get_value(participants, Config),
+    Clients = proplists:get_value(channel_clients, Config),
     {SenderRole, AckRole} =
         case Owner of
             initiator -> {initiator, responder};
@@ -4892,10 +4743,11 @@ create_contract_(TestName, SenderConnPid, UpdateVolley, Config) ->
                               <<"init">>, InitArgument),
 
     ws_send_tagged(SenderConnPid, <<"update">>, <<"new_contract">>,
-                   #{vm_version => 1,
-                     deposit    => 10,
-                     code       => EncodedCode,
-                     call_data  => EncodedInitData}, Config),
+                   #{vm_version  => latest_sophia_vm(),
+                     abi_version => latest_sophia_abi(),
+                     deposit     => 10,
+                     code        => EncodedCode,
+                     call_data   => EncodedInitData}, Config),
     UnsignedStateTx = UpdateVolley(),
     {UnsignedStateTx, EncodedCode}.
 
@@ -4995,10 +4847,10 @@ call_a_contract(Function, Argument, ContractPubKey, Code, SenderConnPid,
                                                                    Function,
                                                                    Argument),
     ws_send_tagged(SenderConnPid, <<"update">>, <<"call_contract">>,
-                   #{contract   => aehttp_api_encoder:encode(contract_pubkey, ContractPubKey),
-                     vm_version => 1,
-                     amount     => Amount,
-                     call_data  => EncodedMainData}, Config),
+                   #{contract    => aehttp_api_encoder:encode(contract_pubkey, ContractPubKey),
+                     abi_version => latest_sophia_abi(),
+                     amount      => Amount,
+                     call_data   => EncodedMainData}, Config),
     _UnsignedStateTx = UpdateVolley().
 
 
@@ -5059,7 +4911,123 @@ sc_ws_timeout_open(Config) ->
     {ok, IConnPid} = channel_ws_start(initiator, maps:put(host, <<"localhost">>, ChannelOpts), Config),
     ok = ?WS:register_test_for_channel_event(IConnPid, info),
     ok = wait_for_channel_event(<<"died">>, IConnPid, info, Config),
+    ok = ?WS:unregister_test_for_channel_event(IConnPid, info),
     ok.
+
+sc_ws_basic_open_close(Config0) ->
+    Config = sc_ws_open_(Config0),
+    ok = sc_ws_update_(Config),
+    ok = sc_ws_close_(Config).
+
+sc_ws_failed_update(Config) ->
+    ChannelClients = proplists:get_value(channel_clients, Config),
+    Participants = proplists:get_value(participants, Config),
+    lists:foreach(
+        fun(Sender) ->
+            LogPid = maps:get(Sender, ChannelClients),
+            ?WS:log(LogPid, info, "Failing update, insufficient balance"),
+            {ok, #{<<"reason">> := <<"insufficient_balance">>,
+                  <<"request">> := _Request0}} = channel_update_fail(
+                                                   ChannelClients, Sender,
+                                                   Participants, 10000000, Config),
+            ?WS:log(LogPid, info, "Failing update, negative amount"),
+            {ok, #{<<"reason">> := <<"negative_amount">>,
+                  <<"request">> := _Request1}} = channel_update_fail(
+                                                   ChannelClients, Sender,
+                                                   Participants, -1, Config),
+            ?WS:log(LogPid, info, "Failing update, invalid pubkeys"),
+            {ok, #{<<"reason">> := <<"invalid_pubkeys">>,
+                  <<"request">> := _Request2}} =
+                channel_update_fail(ChannelClients, Sender,
+                                    #{initiator => #{pub_key => <<42:32/unit:8>>},
+                                      responder => #{pub_key => <<43:32/unit:8>>}},
+                                    1, Config),
+            ok
+        end,
+        [initiator, responder]),
+    ok.
+
+sc_ws_generic_messages(Config) ->
+    #{initiator := #{pub_key := IPubkey},
+      responder := #{pub_key := RPubkey}} = proplists:get_value(participants, Config),
+    #{initiator := IConnPid, responder :=RConnPid}
+        = proplists:get_value(channel_clients, Config),
+    lists:foreach(
+        fun({Sender, Msg}) ->
+            {SenderPubkey, ReceiverPubkey, SenderPid, ReceiverPid} =
+                case Sender of
+                    initiator ->
+                        {IPubkey, RPubkey, IConnPid, RConnPid};
+                    responder ->
+                        {RPubkey, IPubkey, RConnPid, IConnPid}
+                end,
+                SenderEncodedK = aehttp_api_encoder:encode(account_pubkey, SenderPubkey),
+                ReceiverEncodedK = aehttp_api_encoder:encode(account_pubkey, ReceiverPubkey),
+                ok = ?WS:register_test_for_channel_event(ReceiverPid, message),
+
+                ws_send(SenderPid, <<"message">>,
+                        #{<<"to">> => ReceiverEncodedK,
+                          <<"info">> => Msg}, Config),
+
+                {ok, #{<<"message">> := #{<<"from">> := SenderEncodedK,
+                                          <<"to">> := ReceiverEncodedK,
+                                          <<"info">> := Msg}}}
+                    = wait_for_channel_event(ReceiverPid, message, Config),
+                ok = ?WS:unregister_test_for_channel_event(ReceiverPid, message)
+        end,
+      [ {initiator, <<"hejsan">>}                   %% initiator can send
+      , {responder, <<"svejsan">>}                  %% responder can send
+      , {initiator, <<"first message in a row">>}   %% initiator can send two messages in a row
+      , {initiator, <<"second message in a row">>}
+      , {responder, <<"some message">>}             %% responder can send two messages in a row
+      , {responder, <<"other message">>}
+      ]),
+    ok.
+
+sc_ws_update_conflict(Config) ->
+    Participants = proplists:get_value(participants, Config),
+    ChannelClients = proplists:get_value(channel_clients, Config),
+    lists:foreach(
+        fun(FirstSender) ->
+                channel_conflict(ChannelClients, FirstSender, Participants, 1, 2,
+                                 Config)
+        end,
+        [initiator,
+         responder]),
+    ok.
+
+sc_ws_close_mutual(Config0) ->
+    lists:foreach(
+        fun(WhoCloses) ->
+            Config = sc_ws_open_(Config0),
+            sc_ws_close_mutual_(Config, WhoCloses)
+        end,
+        [initiator,
+         responder]).
+
+sc_ws_leave_reestablish(Config0) ->
+    Config = sc_ws_open_(Config0),
+    ReestablOptions = sc_ws_leave_(Config),
+    Config1 = sc_ws_reestablish_(ReestablOptions, Config),
+    ok = sc_ws_update_(Config1),
+    ok = sc_ws_close_(Config1).
+
+sc_ws_deposit(Config) ->
+    lists:foreach(
+        fun(Depositor) ->
+            sc_ws_deposit_(Config, Depositor),
+            ok
+        end,
+        [initiator, responder]).
+
+sc_ws_withdraw(Config) ->
+    lists:foreach(
+        fun(Depositor) ->
+            sc_ws_withdraw_(Config, Depositor),
+            ok
+        end,
+        [initiator, responder]).
+
 
 %% channel_options(IPubkey, RPubkey, IAmt, RAmt) ->
 %%     channel_options(IPubkey, RPubkey, IAmt, RAmt, #{}).
@@ -5088,6 +5056,51 @@ peers(_Config) ->
 
     {ok, 200, #{<<"blocked">> := [], <<"peers">> := []}} = get_peers(),
     ok.
+
+-define(pending_token_supply_pattern(X, Y, Z),
+        #{ <<"accounts">> := X
+         , <<"contracts">> := 0
+         , <<"contract_oracles">> := 0
+         , <<"locked">> := 0
+         , <<"oracles">> := 0
+         , <<"oracle_queries">> := 0
+         , <<"pending_rewards">> := Y
+         , <<"total">> := Z
+         }).
+
+sum_token_supply(_Config) ->
+    TopHeader = rpc(?NODE, aec_chain, top_header, []),
+    Height = aec_headers:height(TopHeader),
+    case Height < 2 of
+        true ->
+            Mine = 2 - Height,
+            NodeName = aecore_suite_utils:node_name(?NODE),
+            aecore_suite_utils:mine_key_blocks(NodeName, Mine);
+        false ->
+            ok
+    end,
+    {ok, 200, Supply0} = get_token_supply_sut(0),
+    {ok, 200, Supply1} = get_token_supply_sut(1),
+    {ok, 200, Supply2} = get_token_supply_sut(2),
+    Pending0 = rpc(?NODE, aec_coinbase, coinbase_at_height, [0]),
+    Pending1 = rpc(?NODE, aec_coinbase, coinbase_at_height, [1]) + Pending0,
+    Pending2 = rpc(?NODE, aec_coinbase, coinbase_at_height, [2]) + Pending1,
+    ?assertMatch(?pending_token_supply_pattern(_, Pending0, _), Supply0),
+    Accounts = maps:get(<<"accounts">>, Supply0),
+    Total1 = Accounts + Pending1,
+    ?assertMatch(?pending_token_supply_pattern(Accounts, Pending1, Total1),
+                 Supply1),
+    Total2 = Accounts + Pending2,
+    ?assertMatch(?pending_token_supply_pattern(Accounts, Pending2, Total2),
+                 Supply2),
+    {ok, 400, #{<<"reason">> := <<"Chain too short">>}} =
+        get_token_supply_sut(Height + 5),
+    ok.
+
+get_token_supply_sut(Height) ->
+    Host = internal_address(),
+    HeightS = integer_to_list(Height),
+    http_request(Host, get, "debug/token-supply/height/" ++ HeightS, []).
 
 enabled_debug_endpoints(_Config) ->
     ?assertMatch({ok, 400, _}, post_key_blocks_sut(#{})),
@@ -5935,3 +5948,9 @@ bin(B) when is_binary(B) ->
 sc_ws_protocol(Config) ->
     {_, Protocol} = lists:keyfind(sc_ws_protocol, 1, Config),
     Protocol.
+
+latest_sophia_abi() ->
+    aect_test_utils:latest_sophia_abi_version().
+
+latest_sophia_vm() ->
+    aect_test_utils:latest_sophia_vm_version().

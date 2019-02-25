@@ -67,7 +67,7 @@ def setup_node(node):
     root_dir = tempfile.mkdtemp()
 
     # setup the dir with non-mining node
-    user_config = make_no_mining_user_config(root_dir, "epoch.yaml")
+    user_config = make_no_mining_user_config(root_dir, "aeternity.yaml")
     start_node(node, user_config)
     ext_api = external_api(node)
     int_api = internal_api(node)
@@ -79,7 +79,7 @@ def setup_node_with_tokens(node, beneficiary, blocks_to_mine):
     root_dir = tempfile.mkdtemp()
 
     # setup the dir with mining node
-    user_config = make_mining_user_config(root_dir, beneficiary, "epoch.yaml")
+    user_config = make_mining_user_config(root_dir, beneficiary, "aeternity.yaml")
     start_node(node, user_config)
     ext_api = external_api(node)
     int_api = internal_api(node)
@@ -111,10 +111,6 @@ def install_user_config(root_dir, file_name, conf):
 def make_no_mining_user_config(root_dir, file_name):
     conf = """\
 ---
-chain:
-    hard_forks:
-        "1": 0
-
 mining:
     autostart: false
     expected_mine_rate: 100
@@ -132,10 +128,6 @@ mining:
 def make_mining_user_config(root_dir, beneficiary, file_name):
     conf = """\
 ---
-chain:
-    hard_forks:
-        "1": 0
-
 mining:
     autostart: true
     expected_mine_rate: 100
@@ -154,9 +146,9 @@ def start_node(name, config_filename):
         print("\nNode " + name + " starting")
         config_prefix = ""
         if config_filename[0] == "/": # absolute path
-            config_prefix =  'EPOCH_CONFIG="' + config_filename + '" '
+            config_prefix =  'AETERNITY_CONFIG="' + config_filename + '" '
         else:
-            config_prefix =  'EPOCH_CONFIG="`pwd`/' + config_filename + '" '
+            config_prefix =  'AETERNITY_CONFIG="`pwd`/' + config_filename + '" '
 
         print("Starting node with config prefix " + config_prefix)
         p = os.popen("(cd ../.. && " + config_prefix + "make " + name + "-start;)","r")
@@ -303,7 +295,8 @@ def decode_unsigned_tx(encoded_tx):
                 'owner_id': ownerid['pubkey'],
                 'nonce': bytes_to_int(fields[1]),
                 'code': fields[2],
-                'vm_version': bytes_to_int(fields[3]),
+                'vm_version': bytes_to_int(fields[3]) >> 16,
+                'abi_version': bytes_to_int(fields[3]) & 65535,
                 'fee': bytes_to_int(fields[4]),
                 'ttl': bytes_to_int(fields[5]),
                 'deposit': bytes_to_int(fields[6]),

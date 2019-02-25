@@ -44,7 +44,7 @@ cp -pr ~/aeternity/node/keys ~/my_aeternity_keys
 
 Inspect the mining log file of the node:
 ```bash
-less ~/aeternity/node/log/epoch_mining.log
+less ~/aeternity/node/log/aeternity_mining.log
 ```
 
 If the node is mining, you shall read log entries like the following:
@@ -67,7 +67,7 @@ Verify that your node sees the same longest blockchain as the roma network.
 
 Inspect the current top of the blockchain as seen by the roma network:
 ```bash
-curl http://35.178.61.73:3013/v2/blocks/top
+curl http://13.53.161.215:3013/v2/blocks/top
 ```
 
 Inspect the current top of the blockchain as seen by your node:
@@ -82,7 +82,7 @@ Verify that the height is the same; it may take a few minutes for your node to c
 After the node is successfully connected to the roma network, you could verify that it is mining on the same chain as the rest of the network.
 You can validate it observing the `hash` of the `/blocks/top` of the remote nodes:
 ```bash
-$ curl http://35.178.61.73:3013/v2/blocks/top
+$ curl http://13.53.161.215:3013/v2/blocks/top
 {"key_block":{"hash":"kh_2UWBL9BciGC1w2FUukJZinchGRrCuwEuFTkcVvpZcfcpjiAbUy","height":...}}
 ```
 
