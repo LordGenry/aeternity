@@ -115,7 +115,7 @@ run_rename_db_script(DbHostPath, Cfg) ->
     N3 = node_spec_custom_entrypoint(node3, DbHostPath),
     aest_nodes:setup_nodes([N3], Cfg),
     aest_nodes:start_node(node3, Cfg),
-    aest_nodes:run_cmd_in_node_dir(node3, ["bin/aeternity", "console"], #{timeout => 5000}, Cfg),
+%%    aest_nodes:run_cmd_in_node_dir(node3, ["bin/aeternity", "console"], #{timeout => 5000}, Cfg),
     aest_nodes:run_cmd_in_node_dir(node3, ["bin/aeternity", "rename_db", "./data/mnesia/schema.DAT"], #{timeout => 5000}, Cfg),
     aest_nodes:stop_container(node3, ?GRACEFUL_STOP_TIMEOUT, Cfg).
 
