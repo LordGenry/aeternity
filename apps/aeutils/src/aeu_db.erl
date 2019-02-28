@@ -28,7 +28,7 @@ change_node(SchemaDATFilePath, FromNode, ToNode) when is_list(SchemaDATFilePath)
 
 do_change_node(SchemaDatFile, FromNode, ToNode) ->
     ok      = assert_file_present(SchemaDatFile),
-    ok      = prepare_schema_dat_backup(SchemaDatFile),
+    %ok      = prepare_schema_dat_backup(SchemaDatFile),
     TabName = dets_open_file(SchemaDatFile),
     ok      = dets_change_node(FromNode, ToNode, TabName),
     ok      = dets_sync(TabName),
