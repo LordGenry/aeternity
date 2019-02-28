@@ -31,9 +31,9 @@
 %=== COMMON TEST FUNCTIONS =====================================================
 
 all() -> [
-          node_can_reuse_db_of_other_node,
-          roma_node_can_reuse_db_of_other_roma_node,
-          minerva_node_with_epoch_db_can_reuse_db_of_roma_node,
+          %node_can_reuse_db_of_other_node,
+          %roma_node_can_reuse_db_of_other_roma_node,
+          %minerva_node_with_epoch_db_can_reuse_db_of_roma_node,
           minerva_node_can_reuse_db_of_roma_node
          ].
 
