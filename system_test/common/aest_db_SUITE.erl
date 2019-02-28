@@ -84,6 +84,7 @@ node_can_reuse_db_of_other_node_(CreateDbNodeSpecFun, ReuseDbNodeSpecFun, Cfg) -
 
     DbHostPath2 = node_db_host_path(node2, Cfg),
     ok = file_recursive_copy(DbHostPathTmp, DbHostPath2),
+    ok = file:delete(filename:join(DbHostPath2, "schema.DAT.backup")), %% XXX This aims at working around unexpected Docker behaviour.
     N2 = ReuseDbNodeSpecFun(node2, DbHostPath2),
     aest_nodes:setup_nodes([N2], Cfg),
     start_and_wait_node(node2, ?STARTUP_TIMEOUT, Cfg),
