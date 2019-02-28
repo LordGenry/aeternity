@@ -112,11 +112,18 @@ run_db_rename_fun(DbHostPath, Cfg) ->
     end.
 
 run_rename_db_script(DbHostPath, Cfg) ->
+    {ok, DbSchema} = file:read_file(filename:join(DbHostPath, "schema.DAT")),
+    {error, _} = file:read_file(filename:join(DbHostPath, "schema.DAT.backup")),
     N3 = node_spec_custom_entrypoint(node3, DbHostPath),
     aest_nodes:setup_nodes([N3], Cfg),
     aest_nodes:start_node(node3, Cfg),
     {0, _} = aest_nodes:run_cmd_in_node_dir(node3, ["bin/aeternity", "rename_db", "./data/mnesia/schema.DAT"], #{timeout => 5000}, Cfg),
-    aest_nodes:stop_container(node3, ?GRACEFUL_STOP_TIMEOUT, Cfg).
+    aest_nodes:stop_container(node3, ?GRACEFUL_STOP_TIMEOUT, Cfg),
+    {ok, DbSchemaRenamed} = file:read_file(filename:join(DbHostPath, "schema.DAT")),
+    {ok, DbSchemaBackup} = file:read_file(filename:join(DbHostPath, "schema.DAT.backup")),
+    ?assertNotEqual(DbSchema, DbSchemaRenamed),
+    ?assertEqual(DbSchema, DbSchemaBackup),
+    ok.
 
 node_spec(Name, DbHostPath) ->
     DbGuestPath = "/home/aeternity/node/data/mnesia",
