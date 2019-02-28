@@ -20,6 +20,7 @@
 %=== INCLUDES ==================================================================
 
 -include_lib("stdlib/include/assert.hrl").
+-include_lib("kernel/include/file.hrl").
 
 %=== MACROS ====================================================================
 
@@ -68,8 +69,8 @@ node_can_reuse_db_of_other_node_(NodeSpecFun, Cfg) ->
     node_can_reuse_db_of_other_node_(NodeSpecFun, NodeSpecFun, Cfg).
 
 node_can_reuse_db_of_other_node_(CreateDbNodeSpecFun, ReuseDbNodeSpecFun, Cfg) ->
-    DbHostPath = node_db_host_path(node1, Cfg),
-    N1 = CreateDbNodeSpecFun(node1, DbHostPath),
+    DbHostPath1 = node_db_host_path(node1, Cfg),
+    N1 = CreateDbNodeSpecFun(node1, DbHostPath1),
     aest_nodes:setup_nodes([N1], Cfg),
     start_and_wait_node(node1, ?STARTUP_TIMEOUT, Cfg),
     TargetHeight = 3,
@@ -77,14 +78,57 @@ node_can_reuse_db_of_other_node_(CreateDbNodeSpecFun, ReuseDbNodeSpecFun, Cfg) -
     #{hash := BlockHash} = aest_nodes:get_block(node1, TargetHeight),
     aest_nodes:stop_node(node1, ?GRACEFUL_STOP_TIMEOUT, Cfg),
 
-    run_db_rename_fun(DbHostPath, Cfg),
+    DbHostPathTmp = node_db_host_path(tmp, Cfg),
+    ok = file_recursive_copy(DbHostPath1, DbHostPathTmp),
+    run_db_rename_fun(DbHostPathTmp, Cfg),
 
-    N2 = ReuseDbNodeSpecFun(node2, DbHostPath),
+    DbHostPath2 = node_db_host_path(node2, Cfg),
+    ok = file_recursive_copy(DbHostPathTmp, DbHostPath2),
+    N2 = ReuseDbNodeSpecFun(node2, DbHostPath2),
     aest_nodes:setup_nodes([N2], Cfg),
     start_and_wait_node(node2, ?STARTUP_TIMEOUT, Cfg),
     aest_nodes:wait_for_value({height, TargetHeight}, [node2], ?STARTUP_TIMEOUT, Cfg),
     ?assertMatch({ok, 200, _}, get_block_by_hash(node2, BlockHash)),
     ok.
+
+file_recursive_copy(Source, Destination) ->
+    cp_dir(filename:flatten(Source), filename:flatten(Destination)).
+
+%% Mostly copied from aecore_suite_utils.
+cp_dir(From, ToDir) ->
+    ok = filelib:ensure_dir(filename:join(ToDir, "foo")),
+    cp_dir(file:list_dir(From), From, ToDir).
+cp_dir({ok, Fs}, From, To) ->
+    Res =
+        lists:foldl(
+            fun(F, Acc) ->
+                FullF = filename:join(From, F),
+                case filelib:is_dir(FullF) of
+                    true ->
+                        To1 = filename:join(To, F),
+                        cp_dir(FullF, To1),
+                        [FullF|Acc];
+                    false ->
+                        Tgt = filename:join(To, F),
+                        ok = filelib:ensure_dir(Tgt),
+                        {ok,_} = file:copy(FullF, Tgt),
+                        ok = match_mode(FullF, Tgt),
+                        [FullF|Acc]
+                end
+            end, [], Fs),
+    ct:log("cp_dir(~p, ~p) -> ~p", [From, To, Res]),
+    ok;
+cp_dir({error, _} = Error, From, To) ->
+    ct:log("cp_dir(~p, ~p) -> ~p", [From, To, Error]),
+    Error.
+match_mode(A, B) ->
+    case {file:read_link_info(A), file:read_file_info(B)} of
+        {{ok, #file_info{mode = M}}, {ok, FI}} ->
+            file:write_file_info(B, FI#file_info{mode = M});
+        Other ->
+            ct:log("Error matching mode ~p -> ~p: ~p", [A, B, Other]),
+            {error, {match_mode, {A, B}, Other}}
+    end.
 
 get_block_by_hash(NodeName, Hash) ->
     aest_nodes:request(NodeName, 'GetKeyBlockByHash', #{hash => Hash}).
