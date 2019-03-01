@@ -11,7 +11,6 @@
 -export([get_host/0,
          get_port/0,
          get_extra_nonce/1,
-         validate_authorize_req/1, %% TODO: create a separate module for users
          state/1
         ]).
 -endif.
