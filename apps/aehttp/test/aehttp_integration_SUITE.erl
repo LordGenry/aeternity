@@ -233,6 +233,9 @@
 -define(WS, aehttp_ws_test_utils).
 -define(BOGUS_STATE_HASH, <<42:32/unit:8>>).
 
+-define(RETRY(N, Expr), retry(N, fun() -> Expr end, ?LINE)).
+
+
 all() ->
     [
      {group, all}
@@ -541,6 +544,14 @@ groups() ->
        sc_ws_remote_call_contract,
        %% both can call a remote contract refering on-chain data
        sc_ws_remote_call_contract_refering_onchain_data
+      ]},
+     {sc_ws_v1, [sequence],
+      [
+       sc_ws_generic_messages
+      ]},
+     {sc_ws_v2, [sequence],
+      [
+       sc_ws_generic_messages
       ]}
     ].
 
@@ -569,11 +580,12 @@ init_per_suite(Config) ->
     Config1 = aecore_suite_utils:init_per_suite([?NODE], DefCfg, [{symlink_name, "latest.http_endpoints"}, {test_module, ?MODULE}] ++ Config),
     [{nodes, [aecore_suite_utils:node_tuple(?NODE)]}]  ++ Config1.
 
-end_per_suite(_Config) ->
-    ok.
-
 init_per_group(continuous_sc_ws, Config) ->
     sc_ws_open_(Config);
+init_per_group(sc_ws_v1, Config) ->
+    sc_ws_open_(ensure_sc(Config), #{<<"protocol_vsn">> => 1});
+init_per_group(sc_ws_v2, Config) ->
+    sc_ws_open_(ensure_sc(Config), #{<<"protocol_vsn">> => 2});
 init_per_group(all, Config) ->
     Config;
 init_per_group(Group, Config) when
@@ -626,7 +638,7 @@ init_per_group(on_micro_block = Group, Config) ->
     {ok, Tx} = aecore_suite_utils:spend(Node, Pub, Pub, 1, 20000),
     {ok, [Tx]} = rpc:call(Node, aec_tx_pool, peek, [infinity]),
     {ok, [KeyBlock, MicroBlock]} = aecore_suite_utils:mine_micro_blocks(Node, 1),
-    {ok, []} = rpc:call(Node, aec_tx_pool, peek, [infinity]),
+    ?RETRY(3, {ok, []} = rpc:call(Node, aec_tx_pool, peek, [infinity])),
     true = aec_blocks:is_key_block(KeyBlock),
     false = aec_blocks:is_key_block(MicroBlock),
     {ok, PendingKeyBlock} = wait_for_key_block_candidate(),
@@ -690,7 +702,7 @@ init_per_group(tx_is_on_chain = Group, Config) ->
     Config1 = start_node(Group, Config),
     Node = ?config(node, Config1),
     {ok, [KeyBlock, MicroBlock]} = aecore_suite_utils:mine_micro_blocks(Node, 1),
-    {ok, []} = rpc:call(Node, aec_tx_pool, peek, [infinity]),
+    ?RETRY(3, {ok, []} = rpc:call(Node, aec_tx_pool, peek, [infinity])),
     true = aec_blocks:is_key_block(KeyBlock),
     false = aec_blocks:is_key_block(MicroBlock),
     [Tx] = aec_blocks:txs(MicroBlock),
@@ -762,13 +774,21 @@ init_per_group(Group, Config) ->
     aecore_suite_utils:mine_blocks(Node, BlocksToMine),
     Config1.
 
+ensure_sc(Config) ->
+    case lists:keymember(participants, 1, Config) of
+        false -> init_per_group(channel_websocket, Config);
+        true  -> Config
+    end.
+
 end_per_group(Group, _Config) when
       Group =:= all;
       Group =:= block_info;
       Group =:= account_info;
       Group =:= tx_info ->
     ok;
-end_per_group(continuous_sc_ws, Config) ->
+end_per_group(Group, Config) when Group =:= continuous_sc_ws;
+                                  Group =:= sc_ws_v1;
+                                  Group =:= sc_ws_v2 ->
     sc_ws_close_(Config);
 end_per_group(account_with_pending_tx, _Config) ->
     ok;
@@ -776,6 +796,9 @@ end_per_group(oracle_txs, _Config) ->
     ok;
 end_per_group(Group, Config) ->
     ok = stop_node(Group, Config).
+
+end_per_suite(Config) ->
+    stop_all_nodes(Config).
 
 init_per_testcase(post_oracle_register, Config) ->
     %% TODO: assert there is enought balance
@@ -872,6 +895,18 @@ stop_node(true, Group, Config) ->
     end;
 stop_node(false, _Group, _Config) ->
     ok.
+
+stop_all_nodes(Config) ->
+    Nodes = proplists:get_value(nodes, Config, []),
+    lists:foreach(
+      fun({N, NodeName}) ->
+              case net_adm:ping(NodeName) of
+                  pong ->
+                      stop_node_(N, Config);
+                  pang ->
+                      ok
+              end
+      end, Nodes).
 
 stop_node_(Node, Config) ->
     RpcFun = fun(M, F, A) -> rpc(Node, M, F, A) end,
@@ -1543,7 +1578,7 @@ nonce_limit(Config) ->
     aecore_suite_utils:mock_mempool_nonce_offset(Node, 5),
 
     aecore_suite_utils:mine_all_txs(Node),
-    {ok, []} = rpc(aec_tx_pool, peek, [infinity]),
+    ?RETRY(3, {ok, []} = rpc(aec_tx_pool, peek, [infinity])),
 
     Txs = lists:map(
             fun(_N) ->
@@ -2428,7 +2463,7 @@ oracle_transactions(_Config) ->
     ct:log("Before oracle registered nonce is ~p", [rpc(aec_next_nonce, pick_for_account, [MinerPubkey])]),
     ok = wait_for_tx_hash_on_chain(RegisterTxHash),
     ct:log("Oracle registered nonce is ~p", [rpc(aec_next_nonce, pick_for_account, [MinerPubkey])]),
-    {ok, []} = rpc(aec_tx_pool, peek, [infinity]), % empty
+    ?RETRY(3, {ok, []} = rpc(aec_tx_pool, peek, [infinity])), % empty
 
     % oracle_extend_tx positive test
     ExtEncoded = #{oracle_id => aehttp_api_encoder:encode(oracle_pubkey, MinerPubkey),
@@ -2470,7 +2505,7 @@ oracle_transactions(_Config) ->
 
     % mine blocks to include it
     ok = wait_for_tx_hash_on_chain(QueryTxHash),
-    {ok, []} = rpc(aec_tx_pool, peek, [infinity]), % empty
+    ?RETRY(3, {ok, []} = rpc(aec_tx_pool, peek, [infinity])), % empty
 
     ResponseEncoded = #{oracle_id => OracleAddress,
                         query_id => aehttp_api_encoder:encode(oracle_query_id,
@@ -2643,7 +2678,7 @@ nameservice_transaction_claim(MinerAddress, MinerPubkey) ->
 
     %% Mine a block and check mempool empty again
     ok = wait_for_tx_hash_on_chain(PreclaimTxHash),
-    {ok, []} = rpc(aec_tx_pool, peek, [infinity]),
+    ?RETRY(3, {ok, []} = rpc(aec_tx_pool, peek, [infinity])),
 
     Encoded = #{account_id => MinerAddress,
                 name => aehttp_api_encoder:encode(name, Name),
@@ -3067,7 +3102,7 @@ pending_transactions(_Config) ->
     Delay = rpc(aec_governance, beneficiary_reward_delay, []),
     aecore_suite_utils:mine_key_blocks(Node, Delay),
 
-    {ok, []} = rpc(aec_tx_pool, peek, [infinity]), % empty
+    ?RETRY(3, {ok, []} = rpc(aec_tx_pool, peek, [infinity])), % empty
     {ok, 200, #{<<"transactions">> := []}} = get_pending_transactions(),
     InitialBalance =
         case get_balance_at_top() of
@@ -3091,7 +3126,7 @@ pending_transactions(_Config) ->
     ?assertEqual(Bal0, InitialBalance + ExpectedReward),
     true = (is_integer(Bal0) andalso Bal0 >= AmountToSpent),
 
-    {ok, []} = rpc(aec_tx_pool, peek, [infinity]), % still empty
+    ?RETRY(3, {ok, []} = rpc(aec_tx_pool, peek, [infinity])), % still empty
     {ok, 200, #{<<"transactions">> := []}} = get_pending_transactions(),
 
     ReceiverPubKey = random_hash(),
@@ -3116,7 +3151,7 @@ pending_transactions(_Config) ->
         [aehttp_api_encoder:encode(tx_hash, aetx_sign:hash(SignedTx))
             || SignedTx <- NodeTxs],
     {ok, MinedBlocks2a} = aecore_suite_utils:mine_blocks_until_txs_on_chain(Node, PendingTxHashes2, 10),
-    {ok, []} = rpc(aec_tx_pool, peek, [infinity]), % empty again
+    ?RETRY(3, {ok, []} = rpc(aec_tx_pool, peek, [infinity])), % empty again
     {ok, 200, #{<<"transactions">> := []}} = get_pending_transactions(),
 
     %% Make sure we get the reward...
@@ -3277,7 +3312,7 @@ naming_system_manage_name(_Config) ->
     Fee         = 100000,
 
     %% Check mempool empty
-    {ok, []} = rpc(aec_tx_pool, peek, [infinity]),
+    ?RETRY(3, {ok, []} = rpc(aec_tx_pool, peek, [infinity])),
     {ok, 200, #{<<"balance">> := Balance}} = get_accounts_by_pubkey_sut(PubKeyEnc),
 
     %% Get commitment hash to preclaim a name
@@ -3295,7 +3330,7 @@ naming_system_manage_name(_Config) ->
 
     %% Mine a block and check mempool empty again
     ok = wait_for_tx_hash_on_chain(PreclaimTxHash),
-    {ok, []} = rpc(aec_tx_pool, peek, [infinity]),
+    ?RETRY(3, {ok, []} = rpc(aec_tx_pool, peek, [infinity])),
 
     %% Check fee taken from account
     {ok, 200, #{<<"balance">> := Balance1}} = get_accounts_by_pubkey_sut(PubKeyEnc),
@@ -3311,7 +3346,7 @@ naming_system_manage_name(_Config) ->
 
     %% Mine a block and check mempool empty again
     ok = wait_for_tx_hash_on_chain(ClaimTxHash),
-    {ok, []} = rpc(aec_tx_pool, peek, [infinity]),
+    ?RETRY(3, {ok, []} = rpc(aec_tx_pool, peek, [infinity])),
 
     %% Check tx fee taken from account, claim fee locked,
     %% then mine reward and fee added to account
@@ -3339,7 +3374,7 @@ naming_system_manage_name(_Config) ->
 
     %% Mine a block and check mempool empty again
     ok = wait_for_tx_hash_on_chain(UpdateTxHash),
-    {ok, []} = rpc(aec_tx_pool, peek, [infinity]),
+    ?RETRY(3, {ok, []} = rpc(aec_tx_pool, peek, [infinity])),
 
     {ok, 200, #{<<"balance">> := Balance3}} = get_accounts_by_pubkey_sut(PubKeyEnc),
     ?assertEqual(Balance3, Balance2 - Fee),
@@ -3356,7 +3391,7 @@ naming_system_manage_name(_Config) ->
     SpendTxHash = sign_and_post_tx(EncodedSpendTx, PrivKey),
 
     ok = wait_for_tx_hash_on_chain(SpendTxHash),
-    {ok, []} = rpc(aec_tx_pool, peek, [infinity]),
+    ?RETRY(3, {ok, []} = rpc(aec_tx_pool, peek, [infinity])),
 
     %% Only fee is lost as recipient = sender
     %% This tests 'resolve_name' because recipient is expressed by name label
@@ -3373,7 +3408,7 @@ naming_system_manage_name(_Config) ->
 
     %% Mine a block and check mempool empty again
     ok = wait_for_tx_hash_on_chain(TransferTxHash),
-    {ok, []} = rpc(aec_tx_pool, peek, [infinity]),
+    ?RETRY(3, {ok, []} = rpc(aec_tx_pool, peek, [infinity])),
 
     %% Check balance
     {ok, 200, #{<<"balance">> := Balance5}} = get_accounts_by_pubkey_sut(PubKeyEnc),
@@ -3388,7 +3423,7 @@ naming_system_manage_name(_Config) ->
 
     %% Mine a block and check mempool empty again
     ok = wait_for_tx_hash_on_chain(RevokeTxHash),
-    {ok, []} = rpc(aec_tx_pool, peek, [infinity]),
+    ?RETRY(3, {ok, []} = rpc(aec_tx_pool, peek, [infinity])),
 
     %% Check balance
     {ok, 200, #{<<"balance">> := Balance6}} = get_accounts_by_pubkey_sut(PubKeyEnc),
@@ -3408,7 +3443,7 @@ naming_system_broken_txs(_Config) ->
     % these tests require that no accounts are present
     ok = rpc(aec_conductor, reinit_chain, []),
     %% Check mempool empty
-    {ok, []} = rpc(aec_tx_pool, peek, [infinity]),
+    ?RETRY(3, {ok, []} = rpc(aec_tx_pool, peek, [infinity])),
 
     %% Try to submit txs with empty account
     {ok, 400, #{<<"reason">> := <<"Name validation failed with a reason: registrar_unknown">>}} =
@@ -3441,7 +3476,7 @@ naming_system_broken_txs(_Config) ->
                           name_id => aehttp_api_encoder:encode(name, NHash),
                           fee => Fee}),
     %% Check mempool still empty
-    {ok, []} = rpc(aec_tx_pool, peek, [infinity]),
+    ?RETRY(3, {ok, []} = rpc(aec_tx_pool, peek, [infinity])),
     ForkHeight = aecore_suite_utils:latest_fork_height(),
     aecore_suite_utils:mine_blocks(aecore_suite_utils:node_name(?NODE),
                                    ForkHeight),
@@ -3470,6 +3505,9 @@ channel_sign_tx(ConnPid, Privkey, Tag, Config) ->
     Tx.
 
 sc_ws_open_(Config) ->
+    sc_ws_open_(Config, #{}).
+
+sc_ws_open_(Config, Other) ->
     #{initiator := #{pub_key := IPubkey},
       responder := #{pub_key := RPubkey}} = proplists:get_value(participants, Config),
 
@@ -3482,7 +3520,7 @@ sc_ws_open_(Config) ->
 
     {IStartAmt, RStartAmt} = channel_participants_balances(IPubkey, RPubkey),
 
-    ChannelOpts = channel_options(IPubkey, RPubkey, IAmt, RAmt, #{}, Config),
+    ChannelOpts = channel_options(IPubkey, RPubkey, IAmt, RAmt, Other, Config),
     {ok, IConnPid} = channel_ws_start(initiator,
                                            maps:put(host, <<"localhost">>, ChannelOpts), Config),
     ok = ?WS:register_test_for_channel_events(IConnPid, [info, get, sign, on_chain_tx]),
@@ -4954,37 +4992,65 @@ sc_ws_generic_messages(Config) ->
       responder := #{pub_key := RPubkey}} = proplists:get_value(participants, Config),
     #{initiator := IConnPid, responder :=RConnPid}
         = proplists:get_value(channel_clients, Config),
+    Large = large_msg(),
+    MaybeFail = large_msg_outcome(Config),
     lists:foreach(
-        fun({Sender, Msg}) ->
-            {SenderPubkey, ReceiverPubkey, SenderPid, ReceiverPid} =
-                case Sender of
-                    initiator ->
-                        {IPubkey, RPubkey, IConnPid, RConnPid};
-                    responder ->
-                        {RPubkey, IPubkey, RConnPid, IConnPid}
-                end,
-                SenderEncodedK = aehttp_api_encoder:encode(account_pubkey, SenderPubkey),
-                ReceiverEncodedK = aehttp_api_encoder:encode(account_pubkey, ReceiverPubkey),
-                ok = ?WS:register_test_for_channel_event(ReceiverPid, message),
+      fun({Outcome, Sender, Msg}) ->
+              {SenderPubkey, ReceiverPubkey, SenderPid, ReceiverPid} =
+                  case Sender of
+                      initiator ->
+                          {IPubkey, RPubkey, IConnPid, RConnPid};
+                      responder ->
+                          {RPubkey, IPubkey, RConnPid, IConnPid}
+                  end,
+              SenderEncodedK = aehttp_api_encoder:encode(account_pubkey, SenderPubkey),
+              ReceiverEncodedK = aehttp_api_encoder:encode(account_pubkey, ReceiverPubkey),
+              ok = ?WS:register_test_for_channel_event(ReceiverPid, message),
+              ok = ?WS:register_test_for_channel_event(SenderPid, error),
 
-                ws_send(SenderPid, <<"message">>,
-                        #{<<"to">> => ReceiverEncodedK,
-                          <<"info">> => Msg}, Config),
+              ws_send(SenderPid, <<"message">>,
+                      #{<<"to">> => ReceiverEncodedK,
+                        <<"info">> => Msg}, Config),
 
-                {ok, #{<<"message">> := #{<<"from">> := SenderEncodedK,
-                                          <<"to">> := ReceiverEncodedK,
-                                          <<"info">> := Msg}}}
-                    = wait_for_channel_event(ReceiverPid, message, Config),
-                ok = ?WS:unregister_test_for_channel_event(ReceiverPid, message)
+              case Outcome of
+                  ok ->
+                      {ok, #{<<"message">> := #{<<"from">> := SenderEncodedK,
+                                                <<"to">> := ReceiverEncodedK,
+                                                <<"info">> := Msg}}}
+                          = wait_for_channel_event(ReceiverPid, message, Config);
+                  'FAIL' ->
+                      case wait_for_channel_event(SenderPid, error, Config) of
+                          {ok, #{<<"message">> := <<"Invalid request">>}} -> ok;
+                          {ok, #{<<"reason">> := <<"invalid_request">>}} -> ok
+                      end
+              end,
+              ok = ?WS:unregister_test_for_channel_event(ReceiverPid, message),
+              ok = ?WS:unregister_test_for_channel_event(SenderPid, error)
         end,
-      [ {initiator, <<"hejsan">>}                   %% initiator can send
-      , {responder, <<"svejsan">>}                  %% responder can send
-      , {initiator, <<"first message in a row">>}   %% initiator can send two messages in a row
-      , {initiator, <<"second message in a row">>}
-      , {responder, <<"some message">>}             %% responder can send two messages in a row
-      , {responder, <<"other message">>}
+      [ {ok, initiator, <<"hejsan">>}               %% initiator can send
+      , {ok, responder, <<"svejsan">>}                %% responder can send
+      , {ok, initiator, <<"first message in a row">>} %% initiator can send two messages in a row
+      , {ok, initiator, <<"second message in a row">>}
+      , {ok, responder, <<"some message">>}           %% responder can send two messages in a row
+      , {ok, responder, <<"other message">>}
+      , {MaybeFail, initiator, Large}
+      , {MaybeFail, responder, Large}
       ]),
     ok.
+
+large_msg_outcome(Config) ->
+    case ?config(name, ?config(tc_group_properties, Config)) of
+        sc_ws_v2 -> ok;
+        _        -> 'FAIL'
+    end.
+
+large_msg() ->
+    B = iolist_to_binary(lists:duplicate(
+                           60,
+                           [lists:duplicate(100, C)
+                            || C <- [$0,$1,$2,$3,$4,$5,$6,$7,$8,$9]])),
+    60000 = byte_size(B),
+    B.
 
 sc_ws_update_conflict(Config) ->
     Participants = proplists:get_value(participants, Config),
@@ -5646,7 +5712,7 @@ random_hash() ->
 
 prepare_for_spending(BlocksToMine) ->
     aecore_suite_utils:mine_blocks(aecore_suite_utils:node_name(?NODE), BlocksToMine + 1),
-    {ok, []} = rpc(aec_tx_pool, peek, [infinity]), % empty
+    ?RETRY(3, {ok, []} = rpc(aec_tx_pool, peek, [infinity])), % empty
     {ok, 200, _} = get_balance_at_top(), % account present
     {_, PubKey} = aecore_suite_utils:sign_keys(?NODE),
     {ok, Nonce} = rpc(aec_next_nonce, pick_for_account, [PubKey]),
@@ -5956,3 +6022,13 @@ latest_sophia_abi() ->
 
 latest_sophia_vm() ->
     aect_test_utils:latest_sophia_vm_version().
+
+retry(N, F, Line) when N > 0 ->
+    try F()
+    catch Other ->
+            ct:log("Unexpected (L=~p): ~p", [Line, Other]),
+            timer:sleep(500),
+            retry(N-1, F, Line)
+    end;
+retry(0, _, _) ->
+    error(retry_exhausted).
