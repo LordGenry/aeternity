@@ -111,11 +111,11 @@ byte_gas() ->
 
 -ifdef(TEST).
 minimum_gas_price(_Height) ->
-    1.
+    1000000.
 -else.
 minimum_gas_price(Height) ->
     case aec_hard_forks:protocol_effective_at_height(Height) of
-        ?ROMA_PROTOCOL_VSN -> 1;
+        ?ROMA_PROTOCOL_VSN -> 1000000;
         Vsn when Vsn >= ?MINERVA_PROTOCOL_VSN -> 1000000
     end.
 -endif.
