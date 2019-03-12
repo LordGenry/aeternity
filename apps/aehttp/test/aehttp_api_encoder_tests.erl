@@ -7,23 +7,26 @@
 -include_lib("eunit/include/eunit.hrl").
 
 -define(TEST_MODULE, aehttp_api_encoder).
--define(TYPES, [ {key_block_hash    , 32}
-               , {micro_block_hash  , 32}
-               , {block_tx_hash     , 32}
-               , {block_state_hash  , 32}
-               , {channel           , 32}
-               , {contract_pubkey   , 32}
-               , {transaction       , not_applicable}
-               , {tx_hash           , 32}
-               , {oracle_pubkey     , 32}
-               , {oracle_query_id   , 32}
-               , {account_pubkey    , 32}
-               , {signature         , 64}
-               , {name              , not_applicable}
-               , {commitment        , 32}
-               , {peer_pubkey       , 32}
-               , {state             , 32}
-               , {poi               , not_applicable}]).
+-define(TYPES, [ {key_block_hash      , 32}
+               , {micro_block_hash    , 32}
+               , {block_tx_hash       , 32}
+               , {block_state_hash    , 32}
+               , {channel             , 32}
+               , {contract_pubkey     , 32}
+               , {contract_bytearray  , not_applicable}
+               , {contract_store_key  , not_applicable}
+               , {contract_store_value, not_applicable}
+               , {transaction         , not_applicable}
+               , {tx_hash             , 32}
+               , {oracle_pubkey       , 32}
+               , {oracle_query_id     , 32}
+               , {account_pubkey      , 32}
+               , {signature           , 64}
+               , {name                , not_applicable}
+               , {commitment          , 32}
+               , {peer_pubkey         , 32}
+               , {state               , 32}
+               , {poi                 , not_applicable}]).
 
 encode_decode_test_() ->
     [{"Byte sizes are correct",
