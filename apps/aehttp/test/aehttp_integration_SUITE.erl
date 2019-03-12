@@ -6165,13 +6165,10 @@ mine_micro_block_emptying_mempool_or_fail(Node) ->
     true = aec_blocks:is_key_block(KeyBlock),
     false = aec_blocks:is_key_block(MicroBlock),
     case rpc:call(Node, aec_tx_pool, peek, [infinity]) of
-        {ok, []} -> ok;
-        {ok, [_|_] = MempoolTxs} ->
+        {ok, MempoolTxs} ->
             NewBlocks = aecore_suite_utils:flush_new_blocks(),
             case
-                (length(NewBlocks) =:= 1) andalso aec_blocks:is_key_block(hd(NewBlocks)) andalso
-                (aec_blocks:hash_internal_representation(KeyBlock) =:= {ok, aec_blocks:prev_key_hash(MicroBlock)}) andalso
-                (aec_blocks:prev_key_hash(MicroBlock) =:= aec_blocks:prev_key_hash(hd(NewBlocks)))
+                (aec_blocks:hash_internal_representation(KeyBlock) =:= {ok, aec_blocks:prev_key_hash(MicroBlock)})
             of
                 true ->
                     ct:fail("Key block mined shortly after micro block mined pushed the micro block out of the chain.");
