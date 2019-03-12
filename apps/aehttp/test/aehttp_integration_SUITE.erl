@@ -6168,14 +6168,14 @@ mine_micro_block_emptying_mempool_or_fail(Node) ->
         {ok, MempoolTxs} ->
             NewBlocks = aecore_suite_utils:flush_new_blocks(),
             case
-                (aec_blocks:hash_internal_representation(KeyBlock) =:= {ok, aec_blocks:prev_key_hash(MicroBlock)})
+                false
             of
                 true ->
                     ct:fail("Key block mined shortly after micro block mined pushed the micro block out of the chain.");
                 false ->
                     ct:pal(
                         "Unexpected transactions in mempool:~n~p~nUnexpected new block events:~n~p",
-                        [MempoolTxs, NewBlocks]),
+                        [MempoolTxs, [KeyBlock | NewBlocks]]),
                     ct:fail("Unexpected transactions in mempool")
             end
     end,
