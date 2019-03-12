@@ -629,7 +629,12 @@ init_per_group(on_micro_block = Group, Config) ->
     {ok, [Tx]} = rpc:call(Node, aec_tx_pool, peek, [infinity]),
     ct:log("Spend tx ~p", [Tx]),
     {ok, [KeyBlock, MicroBlock]} = aecore_suite_utils:mine_micro_blocks(Node, 1),
-    {ok, []} = rpc:call(Node, aec_tx_pool, peek, [infinity]),
+    case rpc:call(Node, aec_tx_pool, peek, [infinity]) of
+        {ok, []} -> ok;
+        {ok, [_|_] = MempoolTxs} ->
+            ct:fail("Unexpected transactions in mempool:~n~pUnexpected new block events:~n~p",
+                    [MempoolTxs, aecore_suite_utils:flush_new_blocks()])
+    end,
     true = aec_blocks:is_key_block(KeyBlock),
     false = aec_blocks:is_key_block(MicroBlock),
     {ok, PendingKeyBlock} = wait_for_key_block_candidate(),
@@ -693,7 +698,12 @@ init_per_group(tx_is_on_chain = Group, Config) ->
     Config1 = start_node(Group, Config),
     Node = ?config(node, Config1),
     {ok, [KeyBlock, MicroBlock]} = aecore_suite_utils:mine_micro_blocks(Node, 1),
-    {ok, []} = rpc:call(Node, aec_tx_pool, peek, [infinity]),
+    case rpc:call(Node, aec_tx_pool, peek, [infinity]) of
+        {ok, []} -> ok;
+        {ok, [_|_] = MempoolTxs} ->
+            ct:fail("Unexpected transactions in mempool:~n~pUnexpected new block events:~n~p",
+                    [MempoolTxs, aecore_suite_utils:flush_new_blocks()])
+    end,
     true = aec_blocks:is_key_block(KeyBlock),
     false = aec_blocks:is_key_block(MicroBlock),
     [Tx] = aec_blocks:txs(MicroBlock),
